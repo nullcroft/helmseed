@@ -1,0 +1,78 @@
+package config
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+type ProviderKind string
+
+const (
+	ProviderGitHub ProviderKind = "github"
+	ProviderGitLab ProviderKind = "gitlab"
+)
+
+func (p ProviderKind) IsValid() bool {
+	return p == ProviderGitHub || p == ProviderGitLab
+}
+
+type Config struct {
+	Provider ProviderKind `mapstructure:"provider"`
+	Group    string       `mapstructure:"group"`
+	Token    string       `mapstructure:"token"`
+	BaseURL  string       `mapstructure:"base_url"`
+	Prefix   string       `mapstructure:"prefix"`
+	CacheTTL time.Duration `mapstructure:"cache_ttl"`
+}
+
+func Load(cfgFile string) (*Config, error) {
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		viper.AddConfigPath(".")
+		viper.SetConfigName("helmseed")
+		viper.SetConfigType("yaml")
+	}
+
+	viper.SetDefault("cache_ttl", "24h")
+
+	viper.SetEnvPrefix("HELMSEED")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, fmt.Errorf("failed to read config: %w", err)
+		}
+	}
+
+	var c Config
+	if err := viper.Unmarshal(&c); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+
+	return &c, nil
+}
+
+func (c *Config) validate() error {
+	if c.Provider == "" {
+		return fmt.Errorf("config: 'provider' is required (github or gitlab)")
+	}
+
+	if !c.Provider.IsValid() {
+		return fmt.Errorf("config: unsupported provider %q, must be 'github' or 'gitlab'", c.Provider)
+	}
+
+	if c.Group == "" {
+		return fmt.Errorf("config: 'group' is required")
+	}
+
+	return nil
+}

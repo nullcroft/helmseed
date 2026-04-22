@@ -1,0 +1,26 @@
+BINARY := helmseed
+VERSION := 0.1.0
+BUILD_DIR := ./bin
+
+.PHONY: build test lint clean tidy
+
+build:
+	@mkdir -p $(BUILD_DIR)
+	go build -ldflags="-X 'github.com/nullcroft/helmseed/cmd.version=$(VERSION)'" -o $(BUILD_DIR)/$(BINARY) .
+
+
+test:
+	go test ./... $(ARGS)
+
+
+lint:
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found, install from https://golangci-lint.run" && exit 1)
+	golangci-lint run ./...
+
+
+tidy:
+	go mod tidy
+
+
+clean:
+	rm -rf $(BUILD_DIR)
