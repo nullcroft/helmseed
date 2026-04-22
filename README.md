@@ -1,5 +1,7 @@
 # helmseed
 
+> **Warning**: The `master` branch may be in a broken state. Use [releases/tags](https://github.com/nullcroft/helmseed/releases) to get a stable working version.
+
 helmseed bootstraps golden-image Helm charts from a GitHub org or GitLab group into your application repository. It clones chart repos into `.helm/charts/`, manages a local cache to avoid redundant fetches, and generates Helm-compliant `Chart.yaml` and `Chart.lock` files.
 
 ## How it works
@@ -47,6 +49,15 @@ group: my-org
 # How long cached repos are considered fresh (Go duration syntax)
 # Defaults to 24h
 # cache_ttl: 24h
+
+# Output directory for charts (default: .helm)
+# charts_dir: .helm
+
+# Cache directory (default: ~/.cache/helmseed)
+# cache_dir: ~/.cache/helmseed
+
+# Skip interactive confirmation prompts (equivalent to --yes flag)
+# non_interactive: false
 ```
 
 ### Required fields
@@ -58,12 +69,15 @@ group: my-org
 
 ### Optional fields
 
-| Field      | Description                                        | Default |
-|------------|----------------------------------------------------|---------|
-| `token`    | Personal access token for API and clone auth       | none    |
-| `base_url` | GitLab base URL for self-hosted instances          | none    |
-| `prefix`   | Only include repos with names starting with this   | none    |
-| `cache_ttl`| Duration before a cached repo is considered stale  | `24h`   |
+| Field            | Description                                        | Default            |
+|-----------------|----------------------------------------------------|-------------------|
+| `token`         | Personal access token for API and clone auth          | none              |
+| `base_url`      | GitLab base URL for self-hosted instances         | none              |
+| `prefix`        | Only include repos with names starting with this  | none              |
+| `cache_ttl`    | Duration before a cached repo is considered stale | `24h`             |
+| `charts_dir`    | Output directory for Helm charts            | `.helm`           |
+| `cache_dir`    | Cache directory for cloned repos          | `~/.cache/helmseed`|
+| `non_interactive`| Skip confirmation prompts                  | `false`           |
 
 ## Usage
 
@@ -80,9 +94,11 @@ helmseed list
 Interactively select repos and clone them into `.helm/charts/`:
 
 ```sh
-helmseed bootstrap            # default: remote URLs in Chart.lock
+helmseed bootstrap            # interactive TUI selection
 helmseed bootstrap --local    # use file:// paths in Chart.lock
-helmseed bootstrap --remote   # explicit remote URLs (same as default)
+helmseed bootstrap --remote   # explicit remote URLs (default)
+helmseed bootstrap --all     # select all matching repos (skip TUI)
+helmseed bootstrap --dry-run  # preview without executing
 ```
 
 This opens a TUI multi-select. Use `j`/`k` or arrow keys to navigate, `space` to toggle, `a` to select all, and `enter` to confirm. Press `q` or `ctrl+c` to abort.
@@ -94,10 +110,23 @@ Charts already present in `.helm/charts/` are skipped. Both `.helm/Chart.yaml` a
 Force re-fetch all charts listed in `.helm/Chart.lock` and overwrite the local copies:
 
 ```sh
-helmseed update
+helmseed update           # asks for confirmation
+helmseed update --yes    # skips confirmation, force update
 ```
 
 This ignores the cache TTL, re-clones every locked chart, replaces the contents under `.helm/charts/`, and regenerates both `.helm/Chart.yaml` and `.helm/Chart.lock`.
+
+### Global flags
+
+All commands support these flags:
+
+```sh
+--yes           # confirm destructive operations (update command)
+--dry-run, -d    # show what would be done without executing
+--verbose, -v     # enable verbose output
+--quiet, -q       # suppress non-essential output
+--config FILE     # specify config file (default: ./helmseed.yaml)
+```
 
 ### Print version
 

@@ -21,11 +21,25 @@ import (
 )
 
 const (
-	chartsDir  = ".helm/charts"
-	chartFile  = ".helm/Chart.yaml"
-	lockFile   = ".helm/Chart.lock"
-	maxWorkers = 5
+	defaultChartsDir = ".helm"
+	chartFileName     = "Chart.yaml"
+	lockFileName     = "Chart.lock"
+	maxWorkers       = 5
+	cloneTimeout     = 5 * time.Minute
 )
+
+func isValidRepoName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	return !strings.HasPrefix(name, ".")
+}
 
 // ChartLock mirrors Helm's Chart.lock structure.
 type ChartLock struct {
@@ -81,12 +95,26 @@ const (
 
 // BootstrapOptions groups configuration for a bootstrap operation.
 type BootstrapOptions struct {
-	TTL    time.Duration
-	Mode   RepoRefMode
-	Prefix string
+	TTL           time.Duration
+	Mode          RepoRefMode
+	Prefix        string
+	ChartsDir     string
+	CacheDir     string
+	ChartName     string
+	ChartDesc    string
 }
 
-func cacheDir() (string, error) {
+func cacheDir(custom string) (string, error) {
+	if custom != "" {
+		if !filepath.IsAbs(custom) {
+			return "", fmt.Errorf("cache_dir must be an absolute path, got %q", custom)
+		}
+		cleaned := filepath.Clean(custom)
+		if strings.Contains(cleaned, "..") {
+			return "", fmt.Errorf("cache_dir must not contain '..', got %q", custom)
+		}
+		return cleaned, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
@@ -125,14 +153,32 @@ func isFresh(entryDir string, ttl time.Duration) bool {
 // Bootstrap ensures repos are cached (cloning if stale/missing) then copies
 // from cache into .helm/charts/. Repos already present in .helm/charts/ are skipped.
 func Bootstrap(ctx context.Context, repos []provider.Repo, opts BootstrapOptions) error {
-	base, err := cacheDir()
+	base, err := cacheDir(opts.CacheDir)
 	if err != nil {
 		return err
 	}
-	return bootstrap(ctx, repos, base, opts)
+	chartsDir := opts.ChartsDir
+	if chartsDir == "" {
+		chartsDir = defaultChartsDir
+	}
+	if filepath.IsAbs(chartsDir) {
+		return fmt.Errorf("charts_dir must be a relative path, got %q", chartsDir)
+	}
+	cleaned := filepath.Clean(chartsDir)
+	if strings.Contains(cleaned, "..") {
+		return fmt.Errorf("charts_dir must not contain '..', got %q", chartsDir)
+	}
+	return bootstrap(ctx, repos, base, chartsDir, opts)
 }
 
-func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase string, opts BootstrapOptions) error {
+func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase, chartsDir string, opts BootstrapOptions) error {
+	// Validate repo names to prevent path traversal
+	for _, r := range repos {
+		if !isValidRepoName(r.Name) {
+			return fmt.Errorf("invalid repo name %q: must not contain '..', '/', or '\\'", r.Name)
+		}
+	}
+
 	// Strip prefix from repo names so cache dirs, chart dirs, and lock entries
 	// all use the short name.
 	if opts.Prefix != "" {
@@ -147,7 +193,7 @@ func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase string, opt
 	if err := os.MkdirAll(cacheBase, 0o755); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
-	if err := os.MkdirAll(chartsDir, 0o755); err != nil {
+	if err := os.MkdirAll(chartsDir+"/charts", 0o755); err != nil {
 		return fmt.Errorf("create charts dir: %w", err)
 	}
 
@@ -156,7 +202,7 @@ func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase string, opt
 	}
 
 	for _, r := range repos {
-		dest := filepath.Join(chartsDir, r.Name)
+		dest := filepath.Join(chartsDir+"/charts", r.Name)
 		if _, err := os.Stat(dest); err == nil {
 			fmt.Printf("  skip %s (already exists)\n", r.Name)
 			continue
@@ -169,16 +215,38 @@ func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase string, opt
 		}
 	}
 
-	return writeHelmFiles(repos, cacheBase, opts.Mode)
+	return writeHelmFiles(repos, cacheBase, chartsDir, opts.Mode, opts.ChartName, opts.ChartDesc)
 }
 
 func ensureCached(ctx context.Context, repos []provider.Repo, base string, ttl time.Duration) error {
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-		sem  = make(chan struct{}, maxWorkers)
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		errs    []error
+		sem    = make(chan struct{}, maxWorkers)
+		dirMu   sync.Mutex
+		locks   = make(map[string]*sync.Mutex)
 	)
+
+	reposToClone := 0
+	for _, r := range repos {
+		entryDir := filepath.Join(base, r.Name)
+		if !isFresh(entryDir, ttl) {
+			reposToClone++
+		}
+	}
+
+	p := NewProgress("cloning", reposToClone)
+	p.Start()
+
+	getLock := func(name string) *sync.Mutex {
+		dirMu.Lock()
+		defer dirMu.Unlock()
+		if locks[name] == nil {
+			locks[name] = &sync.Mutex{}
+		}
+		return locks[name]
+	}
 
 	for _, r := range repos {
 		entryDir := filepath.Join(base, r.Name)
@@ -188,65 +256,70 @@ func ensureCached(ctx context.Context, repos []provider.Repo, base string, ttl t
 			continue
 		}
 
+		repoLock := getLock(r.Name)
+		repoLock.Lock()
+
 		wg.Add(1)
 		sem <- struct{}{}
 
 		go func(r provider.Repo, entryDir string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer repoLock.Unlock()
 
 			_ = os.RemoveAll(entryDir)
 
 			fmt.Printf("  cache miss %s — cloning ...\n", r.Name)
 
-			cloneOpts := &git.CloneOptions{
-				URL:           r.CloneURL,
-				Depth:         1,
-				SingleBranch:  true,
-				ReferenceName: plumbing.NewBranchReferenceName(r.DefaultBranch),
-			}
+			cloneErr := WithRetry(ctx, func(ctx context.Context) error {
+				cloneCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
+				defer cancel()
 
-			repo, cloneErr := git.PlainCloneContext(ctx, entryDir, false, cloneOpts)
+				cloneOpts := &git.CloneOptions{
+					URL:           r.CloneURL,
+					Depth:         1,
+					SingleBranch:  true,
+					ReferenceName: plumbing.NewBranchReferenceName(r.DefaultBranch),
+				}
+
+				repo, err := git.PlainCloneContext(cloneCtx, entryDir, false, cloneOpts)
+				if err != nil {
+					return err
+				}
+
+				head, err := repo.Head()
+				if err != nil {
+					return err
+				}
+				commitSHA := head.Hash().String()
+
+				if err := os.RemoveAll(filepath.Join(entryDir, ".git")); err != nil {
+					return err
+				}
+
+				m := Meta{
+					ClonedAt:       time.Now(),
+					CloneURL:       r.CloneURL,
+					HTTPSURL:       r.HTTPSURL,
+					DefaultBranch: r.DefaultBranch,
+					Commit:        commitSHA,
+				}
+				return writeMeta(entryDir, m)
+			})
+
 			if cloneErr != nil {
 				_ = os.RemoveAll(entryDir)
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("clone %s: %w", r.Name, cloneErr))
 				mu.Unlock()
-				return
-			}
-
-			head, err := repo.Head()
-			if err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("read HEAD for %s: %w", r.Name, err))
-				mu.Unlock()
-				return
-			}
-			commitSHA := head.Hash().String()
-
-			if err := os.RemoveAll(filepath.Join(entryDir, ".git")); err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("strip .git from %s: %w", r.Name, err))
-				mu.Unlock()
-				return
-			}
-
-			m := Meta{
-				ClonedAt:      time.Now(),
-				CloneURL:      r.CloneURL,
-				HTTPSURL:      r.HTTPSURL,
-				DefaultBranch: r.DefaultBranch,
-				Commit:        commitSHA,
-			}
-			if err := writeMeta(entryDir, m); err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("write meta for %s: %w", r.Name, err))
-				mu.Unlock()
+			} else {
+				p.Add()
 			}
 		}(r, entryDir)
 	}
 
 	wg.Wait()
+	p.Finish()
 	return errors.Join(errs...)
 }
 
@@ -274,11 +347,21 @@ func digestDependencies(deps []LockDependency) string {
 	return fmt.Sprintf("sha256:%x", h.Sum(nil))
 }
 
-func writeHelmFiles(repos []provider.Repo, cacheBase string, mode RepoRefMode) error {
+func writeHelmFiles(repos []provider.Repo, cacheBase, chartsDir string, mode RepoRefMode, chartName, chartDesc string) error {
 	var (
 		lockDeps  []LockDependency
 		chartDeps []ChartDependency
 	)
+
+	name := chartName
+	if name == "" {
+		name = "placeholder"
+	}
+	desc := chartDesc
+	if desc == "" {
+		desc = "Auto-generated by helmseed"
+	}
+
 	for _, r := range repos {
 		version := readChartVersion(filepath.Join(cacheBase, r.Name))
 
@@ -301,8 +384,8 @@ func writeHelmFiles(repos []provider.Repo, cacheBase string, mode RepoRefMode) e
 
 	chart := ChartFile{
 		APIVersion:   "v2",
-		Name:         "placeholder",
-		Description:  "placeholder",
+		Name:         name,
+		Description:  desc,
 		Version:      "0.1.0",
 		Type:         "application",
 		Dependencies: chartDeps,
@@ -311,6 +394,7 @@ func writeHelmFiles(repos []provider.Repo, cacheBase string, mode RepoRefMode) e
 	if err != nil {
 		return fmt.Errorf("marshal chart file: %w", err)
 	}
+	chartFile := filepath.Join(chartsDir, chartFileName)
 	if err := os.WriteFile(chartFile, chartData, 0o644); err != nil {
 		return fmt.Errorf("write chart file: %w", err)
 	}
@@ -325,6 +409,7 @@ func writeHelmFiles(repos []provider.Repo, cacheBase string, mode RepoRefMode) e
 	if err != nil {
 		return fmt.Errorf("marshal lock file: %w", err)
 	}
+	lockFile := filepath.Join(chartsDir, lockFileName)
 	if err := os.WriteFile(lockFile, lockData, 0o644); err != nil {
 		return fmt.Errorf("write lock file: %w", err)
 	}
@@ -335,21 +420,26 @@ func writeHelmFiles(repos []provider.Repo, cacheBase string, mode RepoRefMode) e
 
 // Update re-fetches stale repos listed in .helm/Chart.lock,
 // replaces their .helm/charts/ entries, and rewrites the lock file.
-func Update(ctx context.Context, ttl time.Duration) error {
-	base, err := cacheDir()
+func Update(ctx context.Context, opts BootstrapOptions) error {
+	base, err := cacheDir(opts.CacheDir)
 	if err != nil {
 		return err
 	}
-	return updateWithCacheDir(ctx, base, ttl)
+	chartsDir := opts.ChartsDir
+	if chartsDir == "" {
+		chartsDir = defaultChartsDir
+	}
+	return updateWithCacheDir(ctx, base, chartsDir, opts)
 }
 
-func updateWithCacheDir(ctx context.Context, base string, ttl time.Duration) error {
-	lock, err := readLockFile()
+func updateWithCacheDir(ctx context.Context, base, chartsDir string, opts BootstrapOptions) error {
+	lockFilePath := filepath.Join(chartsDir, lockFileName)
+	lock, err := readLockFile(chartsDir)
 	if err != nil {
 		return fmt.Errorf("read lock file: %w", err)
 	}
 	if len(lock.Dependencies) == 0 {
-		return fmt.Errorf("no entries in %s — run bootstrap first", lockFile)
+		return fmt.Errorf("no entries in %s — run bootstrap first", lockFilePath)
 	}
 
 	mode := detectRefMode(lock)
@@ -369,12 +459,12 @@ func updateWithCacheDir(ctx context.Context, base string, ttl time.Duration) err
 		})
 	}
 
-	if err := ensureCached(ctx, repos, base, ttl); err != nil {
+	if err := ensureCached(ctx, repos, base, opts.TTL); err != nil {
 		return err
 	}
 
 	for _, r := range repos {
-		dest := filepath.Join(chartsDir, r.Name)
+		dest := filepath.Join(chartsDir+"/charts", r.Name)
 		_ = os.RemoveAll(dest)
 
 		src := filepath.Join(base, r.Name)
@@ -384,7 +474,7 @@ func updateWithCacheDir(ctx context.Context, base string, ttl time.Duration) err
 		}
 	}
 
-	return writeHelmFiles(repos, base, mode)
+	return writeHelmFiles(repos, base, chartsDir, mode, "", "")
 }
 
 func detectRefMode(lock *ChartLock) RepoRefMode {
@@ -396,8 +486,9 @@ func detectRefMode(lock *ChartLock) RepoRefMode {
 	return RemoteRef
 }
 
-func readLockFile() (*ChartLock, error) {
-	data, err := os.ReadFile(lockFile)
+func readLockFile(chartsDir string) (*ChartLock, error) {
+	lockFilePath := filepath.Join(chartsDir, lockFileName)
+	data, err := os.ReadFile(lockFilePath)
 	if err != nil {
 		return nil, err
 	}

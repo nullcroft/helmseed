@@ -17,3 +17,12 @@ token: ""
 # Cache TTL — how long cached repos are considered fresh (Go duration).
 # Defaults to 24h if not set.
 # cache_ttl: 24h
+
+# Output directory for charts (default: .helm)
+# charts_dir: .helm
+
+# Cache directory (default: ~/.cache/helmseed)
+# cache_dir: ~/.cache/helmseed
+
+# Skip interactive confirmation prompts (equivalent to --yes flag)
+# non_interactive: false

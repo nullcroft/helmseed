@@ -94,14 +94,15 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"},
 		{Name: "repo-b", CloneURL: bare2, HTTPSURL: "https://example.com/repo-b", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
@@ -119,7 +120,7 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 	}
 
 	for _, r := range repos {
-		dest := filepath.Join(chartsDir, r.Name)
+		dest := filepath.Join(testChartsDir+"/charts", r.Name)
 		if _, err := os.Stat(filepath.Join(dest, "Chart.yaml")); err != nil {
 			t.Errorf("charts %s: Chart.yaml missing: %v", r.Name, err)
 		}
@@ -128,6 +129,7 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 		}
 	}
 
+	lockFile := filepath.Join(testChartsDir, lockFileName)
 	lockData, err := os.ReadFile(lockFile)
 	if err != nil {
 		t.Fatalf("lock file missing: %v", err)
@@ -184,23 +186,24 @@ func TestBootstrap_CacheHit(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("first Bootstrap() error: %v", err)
 	}
 
-	_ = os.RemoveAll(filepath.Join(chartsDir, "repo-a"))
+	_ = os.RemoveAll(filepath.Join(testChartsDir, "charts", "repo-a"))
 
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("second Bootstrap() error: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(chartsDir, "repo-a", "Chart.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(testChartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
 		t.Errorf("Chart.yaml missing after cache-hit bootstrap: %v", err)
 	}
 }
@@ -220,13 +223,14 @@ func TestBootstrap_TTLExpired(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("first Bootstrap() error: %v", err)
 	}
 
@@ -239,9 +243,9 @@ func TestBootstrap_TTLExpired(t *testing.T) {
 		t.Fatalf("backdate meta: %v", err)
 	}
 
-	_ = os.RemoveAll(filepath.Join(chartsDir, "repo-a"))
+	_ = os.RemoveAll(filepath.Join(testChartsDir, "charts", "repo-a"))
 
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("second Bootstrap() error: %v", err)
 	}
 
@@ -269,8 +273,9 @@ func TestBootstrap_SkipsExistingCharts(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
-	dest := filepath.Join(chartsDir, "existing")
+	dest := filepath.Join(testChartsDir+"/charts", "existing")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -282,8 +287,8 @@ func TestBootstrap_SkipsExistingCharts(t *testing.T) {
 		{Name: "existing", CloneURL: bare1, HTTPSURL: "https://example.com/existing", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
@@ -312,17 +317,19 @@ func TestBootstrap_LocalRef(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"},
 		{Name: "repo-b", CloneURL: bare2, HTTPSURL: "https://example.com/repo-b", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: LocalRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: LocalRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
+	lockFile := filepath.Join(testChartsDir, lockFileName)
 	lockData, err := os.ReadFile(lockFile)
 	if err != nil {
 		t.Fatalf("lock file missing: %v", err)
@@ -354,16 +361,18 @@ func TestBootstrap_RemoteRef(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
+	lockFile := filepath.Join(testChartsDir, lockFileName)
 	lockData, err := os.ReadFile(lockFile)
 	if err != nil {
 		t.Fatalf("lock file missing: %v", err)
@@ -396,16 +405,18 @@ func TestBootstrap_PrefixStripped(t *testing.T) {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	tmpCache := filepath.Join(workDir, "cache")
+	testChartsDir := filepath.Join(workDir, ".helm")
 
 	repos := []provider.Repo{
 		{Name: "helm-app-frontend", CloneURL: bare1, HTTPSURL: "https://example.com/helm-app-frontend", DefaultBranch: "master"},
 	}
 
-	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, Prefix: "helm-app-"}
-	if err := bootstrap(context.Background(), repos, tmpCache, opts); err != nil {
+	opts := BootstrapOptions{TTL: 24 * time.Hour, Mode: RemoteRef, Prefix: "helm-app-", ChartsDir: testChartsDir}
+	if err := bootstrap(context.Background(), repos, tmpCache, testChartsDir, opts); err != nil {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
+	lockFile := filepath.Join(testChartsDir, lockFileName)
 	lockData, err := os.ReadFile(lockFile)
 	if err != nil {
 		t.Fatalf("lock file missing: %v", err)
@@ -421,10 +432,10 @@ func TestBootstrap_PrefixStripped(t *testing.T) {
 		t.Errorf("name = %q, want %q", lock.Dependencies[0].Name, "frontend")
 	}
 
-	if _, err := os.Stat(filepath.Join(chartsDir, "frontend")); err != nil {
+	if _, err := os.Stat(filepath.Join(testChartsDir, "charts", "frontend")); err != nil {
 		t.Errorf("charts dir 'frontend' missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(chartsDir, "helm-app-frontend")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(testChartsDir, "charts", "helm-app-frontend")); !os.IsNotExist(err) {
 		t.Error("charts dir should use stripped name, not full name")
 	}
 }

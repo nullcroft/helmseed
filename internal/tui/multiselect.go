@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	ErrAborted    = fmt.Errorf("selection aborted")
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
@@ -132,7 +133,7 @@ func Select(repos []provider.Repo) ([]provider.Repo, error) {
 		return nil, fmt.Errorf("tui error: unexpected model type %T", result)
 	}
 	if final.aborted {
-		return nil, nil
+		return nil, ErrAborted
 	}
 
 	out := make([]provider.Repo, 0, len(final.selected))

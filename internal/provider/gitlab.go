@@ -3,12 +3,14 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 type gitLabProvider struct {
 	client *gitlab.Client
+	baseURL string
 }
 
 func newGitLabProvider(token, baseURL string) (*gitLabProvider, error) {
@@ -23,7 +25,7 @@ func newGitLabProvider(token, baseURL string) (*gitLabProvider, error) {
 		return nil, fmt.Errorf("gitlab: failed to create client: %w", err)
 	}
 
-	return &gitLabProvider{client: client}, nil
+	return &gitLabProvider{client: client, baseURL: baseURL}, nil
 }
 
 func (p *gitLabProvider) ListRepos(ctx context.Context, group string) ([]Repo, error) {
@@ -57,4 +59,8 @@ func (p *gitLabProvider) ListRepos(ctx context.Context, group string) ([]Repo, e
 	}
 
 	return all, nil
+}
+
+func (p *gitLabProvider) RateLimit(ctx context.Context) (int, int, time.Time, error) {
+	return 2000, 2000, time.Time{}, nil
 }

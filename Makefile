@@ -1,5 +1,5 @@
 BINARY := helmseed
-VERSION := 0.1.0
+VERSION := v0.1.1
 BUILD_DIR := ./bin
 
 .PHONY: build test lint clean tidy

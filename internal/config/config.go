@@ -20,12 +20,18 @@ func (p ProviderKind) IsValid() bool {
 }
 
 type Config struct {
-	Provider ProviderKind `mapstructure:"provider"`
-	Group    string       `mapstructure:"group"`
-	Token    string       `mapstructure:"token"`
-	BaseURL  string       `mapstructure:"base_url"`
-	Prefix   string       `mapstructure:"prefix"`
-	CacheTTL time.Duration `mapstructure:"cache_ttl"`
+	Provider      ProviderKind   `mapstructure:"provider"`
+	Group       string      `mapstructure:"group"`
+	Token       string      `mapstructure:"token"`
+	BaseURL     string      `mapstructure:"base_url"`
+	Prefix      string      `mapstructure:"prefix"`
+	CacheTTL    time.Duration `mapstructure:"cache_ttl"`
+	ChartsDir   string      `mapstructure:"charts_dir"`
+	CacheDir   string      `mapstructure:"cache_dir"`
+	NonInteractive bool     `mapstructure:"non_interactive"`
+	// Helm chart metadata
+	ChartName        string `mapstructure:"chart_name"`
+	ChartDescription string `mapstructure:"chart_description"`
 }
 
 func Load(cfgFile string) (*Config, error) {
@@ -38,6 +44,9 @@ func Load(cfgFile string) (*Config, error) {
 	}
 
 	viper.SetDefault("cache_ttl", "24h")
+	viper.SetDefault("charts_dir", ".helm")
+	viper.SetDefault("cache_dir", "")
+	viper.SetDefault("non_interactive", false)
 
 	viper.SetEnvPrefix("HELMSEED")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

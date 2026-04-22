@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/nullcroft/helmseed/internal/cache"
-	"github.com/nullcroft/helmseed/internal/filter"
 	"github.com/nullcroft/helmseed/internal/provider"
 	"github.com/nullcroft/helmseed/internal/tui"
 	"github.com/spf13/cobra"
@@ -14,13 +16,19 @@ import (
 var (
 	flagLocal  bool
 	flagRemote bool
+	flagAll   bool
 )
 
 var bootstrapCmd = &cobra.Command{
-	Use:               "bootstrap",
-	Short:             "Interactively pick repos from the configured git provider and clone them to the .helm directory",
+	Use:   "bootstrap",
+	Short: "Interactively pick repos from the configured git provider and clone them to the .helm directory",
+	Long: `Interactively select repos from your git provider and bootstrap them into .helm/charts.
+Use --all to select all repos without interaction, or --dry-run to preview.`,
 	PersistentPreRunE: requireConfig,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := getConfig(cmd.Context())
+		ctx := cmd.Context()
+
 		if flagLocal && flagRemote {
 			return fmt.Errorf("--local and --remote are mutually exclusive")
 		}
@@ -35,26 +43,49 @@ var bootstrapCmd = &cobra.Command{
 			return err
 		}
 
-		repos, err := p.ListRepos(context.Background(), cfg.Group)
-		if err != nil {
-			return err
+		if rater, ok := p.(provider.Rater); ok {
+			err := provider.CheckRateLimit(ctx, rater, string(cfg.Provider), 20)
+			if err != nil {
+				var rateErr *provider.RateLimitError
+				if errors.As(err, &rateErr) {
+					_, _ = fmt.Fprintf(cmd.OutOrStderr(), "Warning: %v\n", err)
+				} else {
+					return err
+				}
+			}
 		}
 
-		repos = filter.ByPrefix(repos, cfg.Prefix)
+		repos, err := p.ListRepos(ctx, cfg.Group)
+		if err != nil {
+			return handleProviderError(ctx, p, err)
+		}
+
+		repos = filterByPrefix(repos, cfg.Prefix)
 
 		if len(repos) == 0 {
-			fmt.Println("No repos found after filtering.")
+			if cfg.Prefix != "" {
+				fmt.Printf("No repos found in %s matching prefix %q.\n", cfg.Group, cfg.Prefix)
+			} else {
+				fmt.Printf("No repos found in %s.\n", cfg.Group)
+			}
 			return nil
 		}
 
-		selected, err := tui.Select(repos)
-		if err != nil {
-			return err
-		}
+		fmt.Printf("Found %d repos in %s\n", len(repos), cfg.Group)
 
-		if selected == nil {
-			fmt.Println("Aborted.")
-			return nil
+		var selected []provider.Repo
+		if flagAll {
+			selected = repos
+		} else {
+			sel, err := tui.Select(repos)
+			if err != nil {
+				if errors.Is(err, tui.ErrAborted) {
+					fmt.Println("Aborted.")
+					return nil
+				}
+				return err
+			}
+			selected = sel
 		}
 
 		if len(selected) == 0 {
@@ -63,13 +94,34 @@ var bootstrapCmd = &cobra.Command{
 		}
 
 		opts := cache.BootstrapOptions{
-			TTL:    cfg.CacheTTL,
-			Mode:   mode,
-			Prefix: cfg.Prefix,
+			TTL:        cfg.CacheTTL,
+			Mode:       mode,
+			Prefix:     cfg.Prefix,
+			ChartsDir:  cfg.ChartsDir,
+			CacheDir:   cfg.CacheDir,
+			ChartName:  cfg.ChartName,
+			ChartDesc: cfg.ChartDescription,
 		}
 
-		fmt.Printf("\nBootstrapping %d repo(s) into .helm/charts/\n", len(selected))
-		if err := cache.Bootstrap(cmd.Context(), selected, opts); err != nil {
+		if flagDryRun {
+			fmt.Printf("\nWould bootstrap %d repo(s) into %s/charts/:\n", len(selected), opts.ChartsDir)
+			for _, r := range selected {
+				fmt.Printf("  - %s\n", r.Name)
+			}
+			return nil
+		}
+
+		if !IsConfirm() && !cfg.NonInteractive {
+			fmt.Printf("\nBootstrap %d repo(s) into %s/charts/ [y/N]? ", len(selected), opts.ChartsDir)
+			var confirm string
+			if _, err := fmt.Fscan(os.Stdin, &confirm); err != nil || (confirm != "y" && confirm != "Y") {
+				fmt.Println("Aborted.")
+				return nil
+			}
+		}
+
+		fmt.Printf("\nBootstrapping %d repo(s) into %s/charts/\n", len(selected), opts.ChartsDir)
+		if err := cache.Bootstrap(ctx, selected, opts); err != nil {
 			return err
 		}
 
@@ -81,5 +133,15 @@ var bootstrapCmd = &cobra.Command{
 func init() {
 	bootstrapCmd.Flags().BoolVar(&flagLocal, "local", false, "use local file:// paths in Chart.lock")
 	bootstrapCmd.Flags().BoolVar(&flagRemote, "remote", false, "use remote repository URLs in Chart.lock (default)")
+	bootstrapCmd.Flags().BoolVar(&flagAll, "all", false, "select all matching repos and skip interactive selection")
+	bootstrapCmd.Flags().SortFlags = false
 	rootCmd.AddCommand(bootstrapCmd)
+}
+
+func handleProviderError(ctx context.Context, p provider.Provider, err error) error {
+	var rateErr *provider.RateLimitError
+	if errors.As(err, &rateErr) {
+		return fmt.Errorf("%v\nHint: Add a token to increase rate limits, or wait until %s", err, rateErr.Reset.Format(time.RFC3339))
+	}
+	return err
 }
