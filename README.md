@@ -37,8 +37,8 @@ provider: github
 # GitHub org name or GitLab group path
 group: my-org
 
-# Personal access token (prefer HELMSEED_TOKEN env var)
-# token: ghp_...
+# Personal access token (required, can also use HELMSEED_TOKEN env var)
+token: ghp_...
 
 # GitLab only: override base URL for self-hosted instances
 # base_url: https://gitlab.example.com
@@ -66,12 +66,12 @@ group: my-org
 |------------|----------------------------------------------|
 | `provider` | `github` or `gitlab`                         |
 | `group`    | GitHub organization or GitLab group path     |
+| `token`    | Personal access token for API and clone auth |
 
 ### Optional fields
 
 | Field            | Description                                        | Default            |
 |-----------------|----------------------------------------------------|-------------------|
-| `token`         | Personal access token for API and clone auth          | none              |
 | `base_url`      | GitLab base URL for self-hosted instances         | none              |
 | `prefix`        | Only include repos with names starting with this  | none              |
 | `cache_ttl`    | Duration before a cached repo is considered stale | `24h`             |

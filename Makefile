@@ -10,7 +10,7 @@ build:
 
 
 test:
-	go test ./... $(ARGS)
+	go test -v ./... $(ARGS)
 
 
 lint:

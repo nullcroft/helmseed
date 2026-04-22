@@ -39,8 +39,8 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./helmseed.yaml)")
-	rootCmd.PersistentFlags().BoolVarP(&flagYes, "yes", "", false, "confirm destructive operations")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default: ./helmseed.yaml)")
+	rootCmd.PersistentFlags().BoolVarP(&flagYes, "yes", "y", false, "confirm destructive operations")
 	rootCmd.PersistentFlags().BoolVarP(&flagDryRun, "dry-run", "d", false, "show what would be done without executing")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "suppress non-essential output")
