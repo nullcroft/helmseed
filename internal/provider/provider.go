@@ -16,7 +16,6 @@ type Repo struct {
 
 type Provider interface {
 	ListRepos(ctx context.Context, group string) ([]Repo, error)
-	RateLimit(ctx context.Context) (int, int, time.Time, error)
 }
 
 var (

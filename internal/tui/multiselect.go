@@ -1,17 +1,18 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/nullcroft/helmseed/internal/provider"
 )
 
 var (
-	ErrAborted    = fmt.Errorf("selection aborted")
+	ErrAborted    = errors.New("selection aborted")
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
@@ -20,7 +21,7 @@ var (
 	keyQuit  = key.NewBinding(key.WithKeys("ctrl+c", "q"))
 	keyUp    = key.NewBinding(key.WithKeys("up", "k"))
 	keyDown  = key.NewBinding(key.WithKeys("down", "j"))
-	keySpace = key.NewBinding(key.WithKeys(" "))
+	keySpace = key.NewBinding(key.WithKeys("space"))
 	keyAll   = key.NewBinding(key.WithKeys("a"))
 	keyEnter = key.NewBinding(key.WithKeys("enter"))
 )
@@ -44,7 +45,7 @@ func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, keyQuit):
 			m.aborted = true
@@ -85,9 +86,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
 	if m.done || m.aborted {
-		return ""
+		return tea.NewView("")
 	}
 
 	var b strings.Builder
@@ -114,7 +115,7 @@ func (m model) View() string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("space: toggle  a: all  enter: confirm  q: quit"))
 
-	return b.String()
+	return tea.NewView(b.String())
 }
 
 // Select runs an interactive multi-select TUI and returns the chosen repos.

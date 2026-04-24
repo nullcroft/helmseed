@@ -18,13 +18,8 @@ This ignores the cache TTL and always re-clones from the remote.`,
 		cfg := getConfig(cmd.Context())
 		ctx := cmd.Context()
 
-		chartsDir := cfg.ChartsDir
-		if chartsDir == "" {
-			chartsDir = ".helm"
-		}
-
 		if !IsConfirm() && !cfg.NonInteractive {
-			fmt.Printf("This will re-fetch all charts from %s/Chart.lock into %s/charts/ [y/N]? ", chartsDir, chartsDir)
+			fmt.Printf("This will re-fetch all charts from %s/Chart.lock into %s/charts/ [y/N]? ", cfg.ChartsDir, cfg.ChartsDir)
 			var confirm string
 			if _, err := fmt.Fscan(os.Stdin, &confirm); err != nil || (confirm != "y" && confirm != "Y") {
 				fmt.Println("Aborted.")
@@ -32,7 +27,6 @@ This ignores the cache TTL and always re-clones from the remote.`,
 			}
 		}
 
-		fmt.Println("Updating charts ...")
 		opts := cache.BootstrapOptions{
 			TTL:       cfg.CacheTTL,
 			ChartsDir: cfg.ChartsDir,

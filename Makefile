@@ -2,7 +2,9 @@ BINARY := helmseed
 VERSION := v0.1.1
 BUILD_DIR := ./bin
 
-.PHONY: build test lint clean tidy
+.PHONY: all build test lint clean purge tidy
+
+all: clean test lint build
 
 build:
 	@mkdir -p $(BUILD_DIR)
@@ -24,3 +26,8 @@ tidy:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+
+purge: clean
+	rm -rf ./.helm
+	rm -rf $(HOME)/.cache/helmseed

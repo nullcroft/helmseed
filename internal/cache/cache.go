@@ -9,7 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -193,71 +193,84 @@ func bootstrap(ctx context.Context, repos []provider.Repo, cacheBase, chartsDir 
 	if err := os.MkdirAll(cacheBase, 0o755); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
-	if err := os.MkdirAll(chartsDir+"/charts", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755); err != nil {
 		return fmt.Errorf("create charts dir: %w", err)
 	}
 
-	if err := ensureCached(ctx, repos, cacheBase, opts.TTL); err != nil {
-		return err
+	// Split repos into cached (fresh) and stale (need cloning).
+	var cached, stale []provider.Repo
+	for _, r := range repos {
+		entryDir := filepath.Join(cacheBase, r.Name)
+		if isFresh(entryDir, opts.TTL) {
+			cached = append(cached, r)
+		} else {
+			stale = append(stale, r)
+		}
 	}
 
-	for _, r := range repos {
-		dest := filepath.Join(chartsDir+"/charts", r.Name)
+	// Track stale charts that were already bootstrapped (skipped).
+	var outdated []string
+
+	// Copy cached repos first, with text output.
+	for _, r := range cached {
+		dest := filepath.Join(filepath.Join(chartsDir, "charts"), r.Name)
 		if _, err := os.Stat(dest); err == nil {
-			fmt.Printf("  skip %s (already exists)\n", r.Name)
+			if !quiet {
+				fmt.Printf("%s already bootstrapped, skipping...\n", r.Name)
+			}
 			continue
 		}
-
 		src := filepath.Join(cacheBase, r.Name)
-		fmt.Printf("  copy %s from cache\n", r.Name)
 		if err := copyDir(src, dest); err != nil {
 			return fmt.Errorf("copy %s from cache: %w", r.Name, err)
 		}
+		if !quiet {
+			fmt.Printf("%s copied from cache\n", r.Name)
+		}
+	}
+
+	// Clone stale repos with progress bar, then copy to charts dir.
+	if len(stale) > 0 {
+		if err := cloneRepos(ctx, stale, cacheBase); err != nil {
+			return err
+		}
+		for _, r := range stale {
+			dest := filepath.Join(filepath.Join(chartsDir, "charts"), r.Name)
+			if _, err := os.Stat(dest); err == nil {
+				if !quiet {
+					fmt.Printf("%s already bootstrapped, skipping...\n", r.Name)
+				}
+				outdated = append(outdated, r.Name)
+				continue
+			}
+			src := filepath.Join(cacheBase, r.Name)
+			if err := copyDir(src, dest); err != nil {
+				return fmt.Errorf("copy %s from cache: %w", r.Name, err)
+			}
+		}
+	}
+
+	if len(outdated) > 0 && !quiet {
+		fmt.Printf("Warning: charts (%s) are outdated, run helmseed update, and bootstrap again\n",
+			strings.Join(outdated, ", "))
 	}
 
 	return writeHelmFiles(repos, cacheBase, chartsDir, opts.Mode, opts.ChartName, opts.ChartDesc)
 }
 
-func ensureCached(ctx context.Context, repos []provider.Repo, base string, ttl time.Duration) error {
+func cloneRepos(ctx context.Context, repos []provider.Repo, base string) error {
 	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		errs    []error
-		sem    = make(chan struct{}, maxWorkers)
-		dirMu   sync.Mutex
-		locks   = make(map[string]*sync.Mutex)
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+		sem  = make(chan struct{}, maxWorkers)
 	)
 
-	reposToClone := 0
-	for _, r := range repos {
-		entryDir := filepath.Join(base, r.Name)
-		if !isFresh(entryDir, ttl) {
-			reposToClone++
-		}
-	}
-
-	p := NewProgress("cloning", reposToClone)
+	p := NewProgress("cloning", len(repos))
 	p.Start()
 
-	getLock := func(name string) *sync.Mutex {
-		dirMu.Lock()
-		defer dirMu.Unlock()
-		if locks[name] == nil {
-			locks[name] = &sync.Mutex{}
-		}
-		return locks[name]
-	}
-
 	for _, r := range repos {
 		entryDir := filepath.Join(base, r.Name)
-
-		if isFresh(entryDir, ttl) {
-			fmt.Printf("  cache hit %s\n", r.Name)
-			continue
-		}
-
-		repoLock := getLock(r.Name)
-		repoLock.Lock()
 
 		wg.Add(1)
 		sem <- struct{}{}
@@ -265,11 +278,8 @@ func ensureCached(ctx context.Context, repos []provider.Repo, base string, ttl t
 		go func(r provider.Repo, entryDir string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			defer repoLock.Unlock()
 
 			_ = os.RemoveAll(entryDir)
-
-			fmt.Printf("  cache miss %s — cloning ...\n", r.Name)
 
 			cloneErr := WithRetry(ctx, func(ctx context.Context) error {
 				cloneCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
@@ -298,9 +308,9 @@ func ensureCached(ctx context.Context, repos []provider.Repo, base string, ttl t
 				}
 
 				m := Meta{
-					ClonedAt:       time.Now(),
-					CloneURL:       r.CloneURL,
-					HTTPSURL:       r.HTTPSURL,
+					ClonedAt:      time.Now(),
+					CloneURL:      r.CloneURL,
+					HTTPSURL:      r.HTTPSURL,
 					DefaultBranch: r.DefaultBranch,
 					Commit:        commitSHA,
 				}
@@ -338,7 +348,9 @@ func readChartVersion(dir string) string {
 func digestDependencies(deps []LockDependency) string {
 	sorted := make([]LockDependency, len(deps))
 	copy(sorted, deps)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	slices.SortFunc(sorted, func(a, b LockDependency) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	h := sha256.New()
 	for _, d := range sorted {
@@ -398,8 +410,6 @@ func writeHelmFiles(repos []provider.Repo, cacheBase, chartsDir string, mode Rep
 	if err := os.WriteFile(chartFile, chartData, 0o644); err != nil {
 		return fmt.Errorf("write chart file: %w", err)
 	}
-	fmt.Printf("  wrote %s\n", chartFile)
-
 	lock := ChartLock{
 		Generated:    time.Now().UTC(),
 		Digest:       digestDependencies(lockDeps),
@@ -413,8 +423,6 @@ func writeHelmFiles(repos []provider.Repo, cacheBase, chartsDir string, mode Rep
 	if err := os.WriteFile(lockFile, lockData, 0o644); err != nil {
 		return fmt.Errorf("write lock file: %w", err)
 	}
-	fmt.Printf("  wrote %s\n", lockFile)
-
 	return nil
 }
 
@@ -459,18 +467,42 @@ func updateWithCacheDir(ctx context.Context, base, chartsDir string, opts Bootst
 		})
 	}
 
-	if err := ensureCached(ctx, repos, base, opts.TTL); err != nil {
-		return err
+	// Split repos into cached (fresh) and stale (need cloning).
+	var cached, stale []provider.Repo
+	for _, r := range repos {
+		entryDir := filepath.Join(base, r.Name)
+		if isFresh(entryDir, opts.TTL) {
+			cached = append(cached, r)
+		} else {
+			stale = append(stale, r)
+		}
 	}
 
-	for _, r := range repos {
-		dest := filepath.Join(chartsDir+"/charts", r.Name)
+	// Copy cached repos first, with text output.
+	for _, r := range cached {
+		dest := filepath.Join(filepath.Join(chartsDir, "charts"), r.Name)
 		_ = os.RemoveAll(dest)
-
 		src := filepath.Join(base, r.Name)
-		fmt.Printf("  copy %s from cache\n", r.Name)
 		if err := copyDir(src, dest); err != nil {
 			return fmt.Errorf("copy %s from cache: %w", r.Name, err)
+		}
+		if !quiet {
+			fmt.Printf("%s copied from cache\n", r.Name)
+		}
+	}
+
+	// Clone stale repos with progress bar, then copy to charts dir.
+	if len(stale) > 0 {
+		if err := cloneRepos(ctx, stale, base); err != nil {
+			return err
+		}
+		for _, r := range stale {
+			dest := filepath.Join(filepath.Join(chartsDir, "charts"), r.Name)
+			_ = os.RemoveAll(dest)
+			src := filepath.Join(base, r.Name)
+			if err := copyDir(src, dest); err != nil {
+				return fmt.Errorf("copy %s from cache: %w", r.Name, err)
+			}
 		}
 	}
 

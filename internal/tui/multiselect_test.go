@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/nullcroft/helmseed/internal/provider"
 )
 
@@ -16,27 +16,20 @@ func testRepos() []provider.Repo {
 	}
 }
 
-var keyTypes = map[string]tea.KeyType{
-	"up":    tea.KeyUp,
-	"down":  tea.KeyDown,
-	"enter": tea.KeyEnter,
-	" ":     tea.KeySpace,
-	"q":     tea.KeyRunes,
-	"a":     tea.KeyRunes,
-	"j":     tea.KeyRunes,
-	"k":     tea.KeyRunes,
-}
-
-func keyMsg(k string) tea.KeyMsg {
-	kt, ok := keyTypes[k]
-	if !ok {
-		kt = tea.KeyRunes
+func keyMsg(k string) tea.KeyPressMsg {
+	switch k {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case " ":
+		return tea.KeyPressMsg{Code: tea.KeySpace}
+	default:
+		r := rune(k[0])
+		return tea.KeyPressMsg{Code: r, Text: k}
 	}
-	msg := tea.KeyMsg{Type: kt}
-	if kt == tea.KeyRunes {
-		msg.Runes = []rune(k)
-	}
-	return msg
 }
 
 func sendKey(m model, k string) model {
@@ -51,23 +44,23 @@ func TestModel_CursorMovement(t *testing.T) {
 		t.Fatalf("initial cursor = %d, want 0", m.cursor)
 	}
 
-	m = sendKey(m, "down")
+	m = sendKey(m, "j")
 	if m.cursor != 1 {
 		t.Errorf("after down: cursor = %d, want 1", m.cursor)
 	}
 
-	m = sendKey(m, "down")
+	m = sendKey(m, "j")
 	if m.cursor != 2 {
 		t.Errorf("after second down: cursor = %d, want 2", m.cursor)
 	}
 
 	// should not go past last item
-	m = sendKey(m, "down")
+	m = sendKey(m, "j")
 	if m.cursor != 2 {
 		t.Errorf("past end: cursor = %d, want 2", m.cursor)
 	}
 
-	m = sendKey(m, "up")
+	m = sendKey(m, "k")
 	if m.cursor != 1 {
 		t.Errorf("after up: cursor = %d, want 1", m.cursor)
 	}
@@ -75,7 +68,7 @@ func TestModel_CursorMovement(t *testing.T) {
 
 func TestModel_CursorDoesNotGoBelowZero(t *testing.T) {
 	m := newModel(testRepos())
-	m = sendKey(m, "up")
+	m = sendKey(m, "k")
 	if m.cursor != 0 {
 		t.Errorf("cursor went below zero: %d", m.cursor)
 	}
@@ -148,7 +141,7 @@ func TestModel_ViewContainsRepoNames(t *testing.T) {
 	view := m.View()
 
 	for _, r := range testRepos() {
-		if !strings.Contains(view, r.Name) {
+		if !strings.Contains(view.Content, r.Name) {
 			t.Errorf("view should contain repo name %q", r.Name)
 		}
 	}
@@ -158,7 +151,7 @@ func TestModel_ViewEmptyAfterDone(t *testing.T) {
 	m := newModel(testRepos())
 	m = sendKey(m, "enter")
 
-	if view := m.View(); view != "" {
-		t.Errorf("view after done should be empty, got %q", view)
+	if view := m.View(); view.Content != "" {
+		t.Errorf("view after done should be empty, got %q", view.Content)
 	}
 }

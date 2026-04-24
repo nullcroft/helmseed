@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -57,7 +56,7 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 
 		repos, err := p.ListRepos(ctx, cfg.Group)
 		if err != nil {
-			return handleProviderError(ctx, p, err)
+			return handleProviderError(err)
 		}
 
 		repos = filterByPrefix(repos, cfg.Prefix)
@@ -104,7 +103,7 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 		}
 
 		if flagDryRun {
-			fmt.Printf("\nWould bootstrap %d repo(s) into %s/charts/:\n", len(selected), opts.ChartsDir)
+			fmt.Printf("Would bootstrap %d repo(s) into %s/charts/:\n", len(selected), opts.ChartsDir)
 			for _, r := range selected {
 				fmt.Printf("  - %s\n", r.Name)
 			}
@@ -112,7 +111,7 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 		}
 
 		if !IsConfirm() && !cfg.NonInteractive {
-			fmt.Printf("\nBootstrap %d repo(s) into %s/charts/ [y/N]? ", len(selected), opts.ChartsDir)
+			fmt.Printf("Bootstrap %d repo(s) into %s/charts/ [y/N]? ", len(selected), opts.ChartsDir)
 			var confirm string
 			if _, err := fmt.Fscan(os.Stdin, &confirm); err != nil || (confirm != "y" && confirm != "Y") {
 				fmt.Println("Aborted.")
@@ -120,7 +119,7 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 			}
 		}
 
-		fmt.Printf("\nBootstrapping %d repo(s) into %s/charts/\n", len(selected), opts.ChartsDir)
+		fmt.Printf("Bootstrapping %d repo(s) into %s/charts/\n", len(selected), opts.ChartsDir)
 		if err := cache.Bootstrap(ctx, selected, opts); err != nil {
 			return err
 		}
@@ -133,12 +132,12 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 func init() {
 	bootstrapCmd.Flags().BoolVar(&flagLocal, "local", false, "use local file:// paths in Chart.lock")
 	bootstrapCmd.Flags().BoolVar(&flagRemote, "remote", false, "use remote repository URLs in Chart.lock (default)")
-	bootstrapCmd.Flags().BoolVar(&flagAll, "all", false, "select all matching repos and skip interactive selection")
+	bootstrapCmd.Flags().BoolVarP(&flagAll, "all", "a", false, "select all matching repos and skip interactive selection")
 	bootstrapCmd.Flags().SortFlags = false
 	rootCmd.AddCommand(bootstrapCmd)
 }
 
-func handleProviderError(ctx context.Context, p provider.Provider, err error) error {
+func handleProviderError(err error) error {
 	var rateErr *provider.RateLimitError
 	if errors.As(err, &rateErr) {
 		return fmt.Errorf("%v\nHint: Add a token to increase rate limits, or wait until %s", err, rateErr.Reset.Format(time.RFC3339))

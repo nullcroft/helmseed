@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -60,8 +61,8 @@ func (p *gitHubProvider) ListRepos(ctx context.Context, group string) ([]Repo, e
 }
 
 func isRateLimitError(err error) bool {
-	ue, ok := err.(*github.ErrorResponse)
-	if !ok {
+	var ue *github.ErrorResponse
+	if !errors.As(err, &ue) {
 		return false
 	}
 	for _, e := range ue.Errors {

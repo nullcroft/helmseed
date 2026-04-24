@@ -2,10 +2,9 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 
+	"github.com/nullcroft/helmseed/internal/cache"
 	"github.com/nullcroft/helmseed/internal/config"
 	"github.com/nullcroft/helmseed/internal/provider"
 	"github.com/spf13/cobra"
@@ -20,7 +19,6 @@ var (
 	cfgFile    string
 	flagYes   bool
 	flagDryRun bool
-	verbose   bool
 	quiet     bool
 )
 
@@ -31,28 +29,23 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() error {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	return nil
+	return rootCmd.Execute()
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default: ./helmseed.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&flagYes, "yes", "y", false, "confirm destructive operations")
 	rootCmd.PersistentFlags().BoolVarP(&flagDryRun, "dry-run", "d", false, "show what would be done without executing")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "suppress non-essential output")
 	_ = viper.BindPFlag("HELMSEED_CONFIG", rootCmd.PersistentFlags().Lookup("config"))
 }
 
-func IsVerbose() bool  { return verbose }
 func IsQuiet() bool   { return quiet }
 func IsConfirm() bool { return flagYes }
-func IsDryRun() bool  { return flagDryRun }
 
 func requireConfig(cmd *cobra.Command, args []string) error {
+	cache.SetQuiet(quiet)
+
 	c, err := config.Load(cfgFile)
 	if err != nil {
 		return err
