@@ -18,6 +18,9 @@ jobs:
       labels: self-hosted
     container: golang:1.26.2-alpine3.22
     steps:
+      - name: Install git
+        run: apk add --no-cache git
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -32,7 +35,7 @@ jobs:
     runs-on:
       group: baremetal
       labels: self-hosted
-    container: v2.11.4-alpine
+    container: golangci/golangci-lint:v2.11.4-alpine
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
