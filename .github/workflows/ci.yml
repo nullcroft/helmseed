@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: main
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test -v ./...
+
+  lint:
+    name: Lint
+    runs-on: main
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+
+  build:
+    name: Build
+    runs-on: main
+    needs: [test, lint]
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          mkdir -p bin
+          go build -ldflags="-X 'github.com/nullcroft/helmseed/cmd.version=${REF_NAME}'" \
+            -o "bin/helmseed-${GOOS}-${GOARCH}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helmseed-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/helmseed-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    name: Release
+    runs-on: main
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
