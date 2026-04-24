@@ -1,6 +1,6 @@
 # helmseed
 
-> **Warning**: The `master` branch may be in a broken state. Use [releases/tags](https://github.com/nullcroft/helmseed/releases) to get a stable working version.
+> **Warning**: The `main` branch may be in a broken state. Use [releases/tags](https://github.com/nullcroft/helmseed/releases) to get a stable working version.
 
 helmseed bootstraps golden-image Helm charts from a GitHub org or GitLab group into your application repository. It clones chart repos into `.helm/charts/`, manages a local cache to avoid redundant fetches, and generates Helm-compliant `Chart.yaml` and `Chart.lock` files.
 
@@ -56,6 +56,10 @@ token: ghp_...
 # Cache directory (default: ~/.cache/helmseed)
 # cache_dir: ~/.cache/helmseed
 
+# Helm chart metadata for generated Chart.yaml
+# chart_name: my-app
+# chart_description: Umbrella chart for my-app
+
 # Skip interactive confirmation prompts (equivalent to --yes flag)
 # non_interactive: false
 ```
@@ -77,6 +81,8 @@ token: ghp_...
 | `cache_ttl`    | Duration before a cached repo is considered stale | `24h`             |
 | `charts_dir`    | Output directory for Helm charts            | `.helm`           |
 | `cache_dir`    | Cache directory for cloned repos          | `~/.cache/helmseed`|
+| `chart_name`     | Name field in generated Chart.yaml         | `placeholder`     |
+| `chart_description`| Description field in generated Chart.yaml| `placeholder`     |
 | `non_interactive`| Skip confirmation prompts                  | `false`           |
 
 ## Usage
@@ -94,11 +100,11 @@ helmseed list
 Interactively select repos and clone them into `.helm/charts/`:
 
 ```sh
-helmseed bootstrap            # interactive TUI selection
-helmseed bootstrap --local    # use file:// paths in Chart.lock
-helmseed bootstrap --remote   # explicit remote URLs (default)
-helmseed bootstrap --all     # select all matching repos (skip TUI)
-helmseed bootstrap --dry-run  # preview without executing
+helmseed bootstrap              # interactive TUI selection
+helmseed bootstrap --local      # use file:// paths in Chart.lock
+helmseed bootstrap --remote     # explicit remote URLs (default)
+helmseed bootstrap --all, -a    # select all matching repos (skip TUI)
+helmseed bootstrap --dry-run    # preview without executing
 ```
 
 This opens a TUI multi-select. Use `j`/`k` or arrow keys to navigate, `space` to toggle, `a` to select all, and `enter` to confirm. Press `q` or `ctrl+c` to abort.
@@ -110,8 +116,8 @@ Charts already present in `.helm/charts/` are skipped. Both `.helm/Chart.yaml` a
 Force re-fetch all charts listed in `.helm/Chart.lock` and overwrite the local copies:
 
 ```sh
-helmseed update           # asks for confirmation
-helmseed update --yes    # skips confirmation, force update
+helmseed update            # asks for confirmation
+helmseed update --yes      # skips confirmation
 ```
 
 This ignores the cache TTL, re-clones every locked chart, replaces the contents under `.helm/charts/`, and regenerates both `.helm/Chart.yaml` and `.helm/Chart.lock`.
@@ -121,11 +127,10 @@ This ignores the cache TTL, re-clones every locked chart, replaces the contents 
 All commands support these flags:
 
 ```sh
---yes           # confirm destructive operations (update command)
---dry-run, -d    # show what would be done without executing
---verbose, -v     # enable verbose output
---quiet, -q       # suppress non-essential output
---config FILE     # specify config file (default: ./helmseed.yaml)
+--yes, -y          # skip confirmation prompts
+--dry-run, -d      # show what would be done without executing
+--quiet, -q        # suppress non-essential output
+--config, -c FILE  # specify config file (default: ./helmseed.yaml)
 ```
 
 ### Print version
@@ -186,13 +191,15 @@ dependencies:
 
 ## Makefile targets
 
-| Target  | Description                        |
-|---------|------------------------------------|
-| `build` | Compile binary to `./bin/helmseed` |
-| `run`   | Run via `go run . $(ARGS)`         |
-| `lint`  | Run `golangci-lint`                |
-| `tidy`  | Run `go mod tidy`                  |
-| `clean` | Remove `./bin/`                    |
+| Target  | Description                                          |
+|---------|------------------------------------------------------|
+| `all`   | Run `clean`, `test`, `lint`, `build` (default target)|
+| `build` | Compile binary to `./bin/helmseed`                   |
+| `test`  | Run all tests                                        |
+| `lint`  | Run `golangci-lint`                                  |
+| `tidy`  | Run `go mod tidy`                                    |
+| `clean` | Remove `./bin/`                                      |
+| `purge` | `clean` + remove `./.helm/` and `~/.cache/helmseed`  |
 
 ## License
 
