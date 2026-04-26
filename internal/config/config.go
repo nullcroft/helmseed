@@ -20,15 +20,15 @@ func (p ProviderKind) IsValid() bool {
 }
 
 type Config struct {
-	Provider      ProviderKind   `mapstructure:"provider"`
-	Group       string      `mapstructure:"group"`
-	Token       string      `mapstructure:"token"`
-	BaseURL     string      `mapstructure:"base_url"`
-	Prefix      string      `mapstructure:"prefix"`
-	CacheTTL    time.Duration `mapstructure:"cache_ttl"`
-	ChartsDir   string      `mapstructure:"charts_dir"`
-	CacheDir   string      `mapstructure:"cache_dir"`
-	NonInteractive bool     `mapstructure:"non_interactive"`
+	Provider       ProviderKind  `mapstructure:"provider"`
+	Group          string        `mapstructure:"group"`
+	Token          string        `mapstructure:"token"`
+	BaseURL        string        `mapstructure:"base_url"`
+	Prefix         string        `mapstructure:"prefix"`
+	CacheTTL       time.Duration `mapstructure:"cache_ttl"`
+	ChartsDir      string        `mapstructure:"charts_dir"`
+	CacheDir       string        `mapstructure:"cache_dir"`
+	NonInteractive bool          `mapstructure:"non_interactive"`
 	// Helm chart metadata
 	ChartName        string `mapstructure:"chart_name"`
 	ChartDescription string `mapstructure:"chart_description"`

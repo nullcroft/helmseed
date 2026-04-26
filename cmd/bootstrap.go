@@ -15,7 +15,7 @@ import (
 var (
 	flagLocal  bool
 	flagRemote bool
-	flagAll   bool
+	flagAll    bool
 )
 
 var bootstrapCmd = &cobra.Command{
@@ -93,12 +93,12 @@ Use --all to select all repos without interaction, or --dry-run to preview.`,
 		}
 
 		opts := cache.BootstrapOptions{
-			TTL:        cfg.CacheTTL,
-			Mode:       mode,
-			Prefix:     cfg.Prefix,
-			ChartsDir:  cfg.ChartsDir,
-			CacheDir:   cfg.CacheDir,
-			ChartName:  cfg.ChartName,
+			TTL:       cfg.CacheTTL,
+			Mode:      mode,
+			Prefix:    cfg.Prefix,
+			ChartsDir: cfg.ChartsDir,
+			CacheDir:  cfg.CacheDir,
+			ChartName: cfg.ChartName,
 			ChartDesc: cfg.ChartDescription,
 		}
 

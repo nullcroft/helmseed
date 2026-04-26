@@ -17,9 +17,9 @@ const configContextKey contextKey = "config"
 
 var (
 	cfgFile    string
-	flagYes   bool
+	flagYes    bool
 	flagDryRun bool
-	quiet     bool
+	quiet      bool
 )
 
 var rootCmd = &cobra.Command{
