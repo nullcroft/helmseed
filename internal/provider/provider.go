@@ -57,8 +57,8 @@ func CheckRateLimit(ctx context.Context, r Rater, provider string, warnThreshold
 }
 
 type RateLimitError struct {
-	Provider    string
-	Limit      int
+	Provider  string
+	Limit     int
 	Remaining int
 	Reset     time.Time
 	Cause     error

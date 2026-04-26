@@ -8,7 +8,7 @@ import (
 )
 
 type gitLabProvider struct {
-	client *gitlab.Client
+	client  *gitlab.Client
 	baseURL string
 }
 
@@ -59,4 +59,3 @@ func (p *gitLabProvider) ListRepos(ctx context.Context, group string) ([]Repo, e
 
 	return all, nil
 }
-

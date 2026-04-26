@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultChartsDir = ".helm"
-	chartFileName     = "Chart.yaml"
+	chartFileName    = "Chart.yaml"
 	lockFileName     = "Chart.lock"
 	maxWorkers       = 5
 	cloneTimeout     = 5 * time.Minute
@@ -95,13 +95,13 @@ const (
 
 // BootstrapOptions groups configuration for a bootstrap operation.
 type BootstrapOptions struct {
-	TTL           time.Duration
-	Mode          RepoRefMode
-	Prefix        string
-	ChartsDir     string
-	CacheDir     string
-	ChartName     string
-	ChartDesc    string
+	TTL       time.Duration
+	Mode      RepoRefMode
+	Prefix    string
+	ChartsDir string
+	CacheDir  string
+	ChartName string
+	ChartDesc string
 }
 
 func cacheDir(custom string) (string, error) {
