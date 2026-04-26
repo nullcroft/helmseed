@@ -6,8 +6,12 @@ import (
 	"github.com/nullcroft/helmseed/cmd"
 )
 
+func run() error {
+	return cmd.Execute()
+}
+
 func main() {
-	if err := cmd.Execute(); err != nil {
+	if err := run(); err != nil {
 		os.Exit(1)
 	}
 }

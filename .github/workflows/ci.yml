@@ -28,7 +28,13 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test -v ./...
+        run: go test -v ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: go-coverage
+          path: coverage.out
 
   lint:
     name: Lint
@@ -57,6 +63,12 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Download coverage
+        uses: actions/download-artifact@v6
+        with:
+          name: go-coverage
+          path: .
 
       - name: Run SonarScanner
         env:
