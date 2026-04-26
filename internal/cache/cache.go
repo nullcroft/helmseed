@@ -117,6 +117,12 @@ func cacheDir(custom string) (string, error) {
 		}
 		return cleaned, nil
 	}
+
+	xdg_dir, found := os.LookupEnv("XDG_CACHE_HOME")
+	if found && (xdg_dir != "") {
+		return filepath.Join(xdg_dir, "helmseed"), nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
