@@ -155,3 +155,76 @@ func TestModel_ViewEmptyAfterDone(t *testing.T) {
 		t.Errorf("view after done should be empty, got %q", view.Content)
 	}
 }
+
+func TestUp(t *testing.T) {
+	m := newModel(testRepos())
+	m.cursor = 2
+	m = m.up()
+	if m.cursor != 1 {
+		t.Errorf("up: cursor = %d, want 1", m.cursor)
+	}
+	m.cursor = 0
+	m = m.up()
+	if m.cursor != 0 {
+		t.Errorf("up at zero: cursor = %d, want 0", m.cursor)
+	}
+}
+
+func TestDown(t *testing.T) {
+	m := newModel(testRepos())
+	m = m.down()
+	if m.cursor != 1 {
+		t.Errorf("down: cursor = %d, want 1", m.cursor)
+	}
+	m.cursor = 2
+	m = m.down()
+	if m.cursor != 2 {
+		t.Errorf("down at end: cursor = %d, want 2", m.cursor)
+	}
+}
+
+func TestToggle(t *testing.T) {
+	m := newModel(testRepos())
+	m = m.toggle()
+	if _, ok := m.selected[0]; !ok {
+		t.Error("toggle should select current item")
+	}
+	m = m.toggle()
+	if _, ok := m.selected[0]; ok {
+		t.Error("toggle again should deselect current item")
+	}
+}
+
+func TestSelectAll(t *testing.T) {
+	m := newModel(testRepos())
+	m = m.selectAll()
+	if len(m.selected) != 3 {
+		t.Errorf("selectAll: %d selected, want 3", len(m.selected))
+	}
+	m = m.selectAll()
+	if len(m.selected) != 0 {
+		t.Errorf("selectAll again: %d selected, want 0", len(m.selected))
+	}
+}
+
+func TestEnter(t *testing.T) {
+	m := newModel(testRepos())
+	updated, cmd := m.enter()
+	if !updated.done {
+		t.Error("enter should set done=true")
+	}
+	if cmd == nil {
+		t.Error("enter should return tea.Quit command")
+	}
+}
+
+func TestQuit(t *testing.T) {
+	m := newModel(testRepos())
+	updated, cmd := m.quit()
+	if !updated.aborted {
+		t.Error("quit should set aborted=true")
+	}
+	if cmd == nil {
+		t.Error("quit should return tea.Quit command")
+	}
+}

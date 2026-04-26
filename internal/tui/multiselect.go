@@ -44,46 +44,72 @@ func newModel(repos []provider.Repo) model {
 func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, keyQuit):
-			m.aborted = true
-			return m, tea.Quit
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		return m.onKey(k)
+	}
+	return m, nil
+}
 
-		case key.Matches(msg, keyUp):
-			if m.cursor > 0 {
-				m.cursor--
-			}
+func (m model) onKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(k, keyQuit):
+		return m.quit()
+	case key.Matches(k, keyUp):
+		return m.up(), nil
+	case key.Matches(k, keyDown):
+		return m.down(), nil
+	case key.Matches(k, keySpace):
+		return m.toggle(), nil
+	case key.Matches(k, keyAll):
+		return m.selectAll(), nil
+	case key.Matches(k, keyEnter):
+		return m.enter()
+	}
+	return m, nil
+}
 
-		case key.Matches(msg, keyDown):
-			if m.cursor < len(m.repos)-1 {
-				m.cursor++
-			}
+func (m model) quit() (model, tea.Cmd) {
+	m.aborted = true
+	return m, tea.Quit
+}
 
-		case key.Matches(msg, keySpace):
-			if _, ok := m.selected[m.cursor]; ok {
-				delete(m.selected, m.cursor)
-			} else {
-				m.selected[m.cursor] = struct{}{}
-			}
+func (m model) up() model {
+	if m.cursor > 0 {
+		m.cursor--
+	}
+	return m
+}
 
-		case key.Matches(msg, keyAll):
-			if len(m.selected) == len(m.repos) {
-				m.selected = make(map[int]struct{})
-			} else {
-				for i := range m.repos {
-					m.selected[i] = struct{}{}
-				}
-			}
+func (m model) down() model {
+	if m.cursor < len(m.repos)-1 {
+		m.cursor++
+	}
+	return m
+}
 
-		case key.Matches(msg, keyEnter):
-			m.done = true
-			return m, tea.Quit
+func (m model) toggle() model {
+	if _, ok := m.selected[m.cursor]; ok {
+		delete(m.selected, m.cursor)
+	} else {
+		m.selected[m.cursor] = struct{}{}
+	}
+	return m
+}
+
+func (m model) selectAll() model {
+	if len(m.selected) == len(m.repos) {
+		m.selected = make(map[int]struct{})
+	} else {
+		for i := range m.repos {
+			m.selected[i] = struct{}{}
 		}
 	}
+	return m
+}
 
-	return m, nil
+func (m model) enter() (model, tea.Cmd) {
+	m.done = true
+	return m, tea.Quit
 }
 
 func (m model) View() tea.View {
@@ -109,7 +135,7 @@ func (m model) View() tea.View {
 			name = selectedStyle.Render(name)
 		}
 
-		fmt.Fprintf(&b, "%s%s %s\n", cursor, check, name)
+		_, _ = fmt.Fprintf(&b, "%s%s %s\n", cursor, check, name)
 	}
 
 	b.WriteString("\n")

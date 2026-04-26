@@ -192,7 +192,7 @@ func TestCopyDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	// meta.json should be skipped
-	if err := os.WriteFile(filepath.Join(src, "meta.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, metaFileName), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func TestCopyDir(t *testing.T) {
 		t.Errorf("foo.txt content = %q, want hello", string(data))
 	}
 
-	if _, err := os.Stat(filepath.Join(dst, "meta.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dst, metaFileName)); !os.IsNotExist(err) {
 		t.Error("meta.json should not be copied")
 	}
 
@@ -269,4 +269,111 @@ func TestUpdate_EmptyLock(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty lock")
 	}
+}
+
+func TestPrepareRepos(t *testing.T) {
+	repos := []provider.Repo{
+		{Name: "helm-app-frontend"},
+		{Name: "helm-app-backend"},
+	}
+
+	got, err := prepareRepos(repos, "helm-app-")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(got))
+	}
+	if got[0].Name != "frontend" {
+		t.Errorf("repo[0].Name = %q, want frontend", got[0].Name)
+	}
+	if got[1].Name != "backend" {
+		t.Errorf("repo[1].Name = %q, want backend", got[1].Name)
+	}
+
+	// Empty prefix: names unchanged
+	got2, err := prepareRepos(repos, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got2[0].Name != "helm-app-frontend" {
+		t.Errorf("empty prefix: repo[0].Name = %q, want helm-app-frontend", got2[0].Name)
+	}
+
+	// Invalid repo name
+	_, err = prepareRepos([]provider.Repo{{Name: "../bad"}}, "")
+	if err == nil {
+		t.Error("expected error for invalid repo name")
+	}
+}
+
+func TestPartitionRepos(t *testing.T) {
+	tmp := t.TempDir()
+	// fresh repo
+	freshDir := filepath.Join(tmp, "fresh")
+	_ = os.MkdirAll(freshDir, 0o755)
+	_ = writeMeta(freshDir, Meta{ClonedAt: time.Now()})
+
+	// stale repo
+	staleDir := filepath.Join(tmp, "stale")
+	_ = os.MkdirAll(staleDir, 0o755)
+	_ = writeMeta(staleDir, Meta{ClonedAt: time.Now().Add(-48 * time.Hour)})
+
+	repos := []provider.Repo{
+		{Name: "fresh"},
+		{Name: "stale"},
+		{Name: "missing"},
+	}
+	cached, stale := partitionRepos(repos, tmp, 24*time.Hour)
+	if len(cached) != 1 || cached[0].Name != "fresh" {
+		t.Errorf("cached = %v, want [fresh]", cached)
+	}
+	if len(stale) != 2 {
+		t.Errorf("stale count = %d, want 2", len(stale))
+	}
+}
+
+func TestSetupDirs(t *testing.T) {
+	tmp := t.TempDir()
+	cacheBase := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, "charts")
+	if err := setupDirs(cacheBase, chartsDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(cacheBase); err != nil {
+		t.Errorf("cache dir missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(chartsDir, "charts")); err != nil {
+		t.Errorf("charts/charts dir missing: %v", err)
+	}
+}
+
+func TestCopyRepos(t *testing.T) {
+	tmp := t.TempDir()
+	cacheBase := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, ".helm")
+	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
+
+	// Set up cache entry
+	_ = os.MkdirAll(filepath.Join(cacheBase, "repo-a"), 0o755)
+	_ = os.WriteFile(filepath.Join(cacheBase, "repo-a", "Chart.yaml"), []byte("name: a\n"), 0o644)
+
+	repos := []provider.Repo{{Name: "repo-a"}}
+	if err := copyRepos(repos, cacheBase, chartsDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
+		t.Errorf("copied chart missing: %v", err)
+	}
+
+	// Second copy should skip existing
+	if err := copyRepos(repos, cacheBase, chartsDir); err != nil {
+		t.Fatalf("second copy error: %v", err)
+	}
+}
+
+func TestWarnOutdated(t *testing.T) {
+	// Should not panic and should not print when quiet is false and outdated is empty
+	warnOutdated(nil)
+	warnOutdated([]string{"a", "b"})
 }

@@ -111,7 +111,7 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(cacheEntry, "Chart.yaml")); err != nil {
 			t.Errorf("cache %s: Chart.yaml missing: %v", r.Name, err)
 		}
-		if _, err := os.Stat(filepath.Join(cacheEntry, "meta.json")); err != nil {
+		if _, err := os.Stat(filepath.Join(cacheEntry, metaFileName)); err != nil {
 			t.Errorf("cache %s: meta.json missing: %v", r.Name, err)
 		}
 		if _, err := os.Stat(filepath.Join(cacheEntry, ".git")); !os.IsNotExist(err) {
@@ -124,7 +124,7 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest, "Chart.yaml")); err != nil {
 			t.Errorf("charts %s: Chart.yaml missing: %v", r.Name, err)
 		}
-		if _, err := os.Stat(filepath.Join(dest, "meta.json")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(dest, metaFileName)); !os.IsNotExist(err) {
 			t.Errorf("charts %s: meta.json should not be copied", r.Name)
 		}
 	}
