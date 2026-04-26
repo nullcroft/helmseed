@@ -1,5 +1,5 @@
+helmseed.yaml
+
 bin/
 .helm/
 *.lock
-
-helmseed.yaml
