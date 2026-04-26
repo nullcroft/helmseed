@@ -3,3 +3,4 @@ helmseed.yaml
 bin/
 .helm/
 *.lock
+.idea/
