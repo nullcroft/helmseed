@@ -19,7 +19,6 @@ type Provider interface {
 }
 
 var (
-	ErrRateLimited   = errors.New("rate limited by API provider")
 	ErrRateExhausted = errors.New("API rate limit exhausted")
 )
 

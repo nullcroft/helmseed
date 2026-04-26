@@ -43,13 +43,38 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run ./...
 
+  sonarqube:
+    name: SonarQube
+    needs: [test, lint]
+    runs-on:
+      group: baremetal
+      labels: self-hosted
+    container:
+      image: sonarsource/sonar-scanner-cli:12.1
+      options: --user root
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run SonarScanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          sonar-scanner \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.qualitygate.wait=true
+
   build:
     name: Build
     runs-on:
       group: baremetal
       labels: self-hosted
     container: golang:1.26.2-alpine3.22
-    needs: [test, lint]
+    needs: [sonarqube]
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       matrix:
