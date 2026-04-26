@@ -30,4 +30,4 @@ clean:
 
 purge: clean
 	rm -rf ./.helm
-	rm -rf $(HOME)/.cache/helmseed
+	rm -rf "$(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)/helmseed"
