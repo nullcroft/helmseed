@@ -377,3 +377,69 @@ func TestWarnOutdated(t *testing.T) {
 	warnOutdated(nil)
 	warnOutdated([]string{"a", "b"})
 }
+
+func TestReposFromLock(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "cache")
+	_ = os.MkdirAll(filepath.Join(base, "repo-a"), 0o755)
+	_ = writeMeta(filepath.Join(base, "repo-a"), Meta{CloneURL: "git@example.com:a.git", HTTPSURL: "https://example.com/a", DefaultBranch: "main"})
+
+	lock := &ChartLock{
+		Dependencies: []LockDependency{
+			{Name: "repo-a", Repository: "https://example.com/a", Version: "1.0.0"},
+		},
+	}
+	repos, err := reposFromLock(lock, base)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %d", len(repos))
+	}
+	if repos[0].Name != "repo-a" {
+		t.Errorf("name = %q, want repo-a", repos[0].Name)
+	}
+
+	// Missing meta should error
+	lock2 := &ChartLock{Dependencies: []LockDependency{{Name: "missing", Repository: "", Version: ""}}}
+	_, err = reposFromLock(lock2, base)
+	if err == nil {
+		t.Error("expected error for missing meta")
+	}
+}
+
+func TestUpdateCopyCached(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, ".helm")
+	_ = os.MkdirAll(filepath.Join(base, "repo-a"), 0o755)
+	_ = os.WriteFile(filepath.Join(base, "repo-a", "Chart.yaml"), []byte("name: a\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
+
+	repos := []provider.Repo{{Name: "repo-a"}}
+	if err := updateCopyCached(repos, base, chartsDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
+		t.Errorf("copied chart missing: %v", err)
+	}
+}
+
+func TestUpdateCloneAndCopyStale(t *testing.T) {
+	bareDir := t.TempDir()
+	bare1 := initBareRepo(t, bareDir, "repo-a")
+
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, ".helm")
+	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
+
+	repos := []provider.Repo{{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"}}
+	ctx := context.Background()
+	if err := updateCloneAndCopyStale(ctx, repos, base, chartsDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
+		t.Errorf("cloned chart missing: %v", err)
+	}
+}
