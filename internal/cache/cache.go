@@ -441,13 +441,12 @@ func Update(ctx context.Context, opts BootstrapOptions) error {
 }
 
 func updateWithCacheDir(ctx context.Context, base, chartsDir string, opts BootstrapOptions) error {
-	lockFilePath := filepath.Join(chartsDir, lockFileName)
 	lock, err := readLockFile(chartsDir)
 	if err != nil {
 		return fmt.Errorf("read lock file: %w", err)
 	}
 	if len(lock.Dependencies) == 0 {
-		return fmt.Errorf("no entries in %s — run bootstrap first", lockFilePath)
+		return fmt.Errorf("no entries in %s — run bootstrap first", filepath.Join(chartsDir, lockFileName))
 	}
 
 	mode := detectRefMode(lock)
