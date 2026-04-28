@@ -30,7 +30,48 @@ const (
 	maxWorkers       = 5
 	cloneTimeout     = 5 * time.Minute
 	errCopyFmt       = "copy %s from cache: %w"
+
+	cacheDirPerm  os.FileMode = 0o750
+	cacheFilePerm os.FileMode = 0o600
 )
+
+// readFileInDir opens dir as an os.Root and reads name within it.
+// Path access is scoped: symlinks that resolve outside dir are refused
+// by the kernel, eliminating the TOCTOU traversal class addressed by
+// gosec G304/G122.
+func readFileInDir(dir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
+// writeFileInDir opens dir as an os.Root and writes name within it.
+func writeFileInDir(dir, name string, data []byte, perm os.FileMode) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
 
 func isValidRepoName(name string) bool {
 	if name == "" || name == "." || name == ".." {
@@ -142,7 +183,7 @@ func validateAbsCachePath(path, label string) (string, error) {
 }
 
 func readMeta(dir string) (Meta, error) {
-	data, err := os.ReadFile(filepath.Join(dir, metaFileName))
+	data, err := readFileInDir(dir, metaFileName)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -158,7 +199,7 @@ func writeMeta(dir string, m Meta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, metaFileName), data, 0o644)
+	return writeFileInDir(dir, metaFileName, data, cacheFilePerm)
 }
 
 func isFresh(entryDir string, ttl time.Duration) bool {
@@ -240,10 +281,10 @@ func prepareRepos(repos []provider.Repo, prefix string) ([]provider.Repo, error)
 }
 
 func setupDirs(cacheBase, chartsDir string) error {
-	if err := os.MkdirAll(cacheBase, 0o755); err != nil {
+	if err := os.MkdirAll(cacheBase, cacheDirPerm); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(chartsDir, "charts"), cacheDirPerm); err != nil {
 		return fmt.Errorf("create charts dir: %w", err)
 	}
 	return nil
@@ -407,7 +448,7 @@ func cloneOne(ctx context.Context, r provider.Repo, entryDir string) error {
 }
 
 func readChartVersion(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "Chart.yaml"))
+	data, err := readFileInDir(dir, chartFileName)
 	if err != nil {
 		return "", fmt.Errorf("read Chart.yaml: %w", err)
 	}
@@ -474,8 +515,7 @@ func writeHelmFiles(repos []provider.Repo, chartsDir string, mode RepoRefMode, c
 	if err != nil {
 		return fmt.Errorf("marshal chart file: %w", err)
 	}
-	chartFile := filepath.Join(chartsDir, chartFileName)
-	if err := os.WriteFile(chartFile, chartData, 0o644); err != nil {
+	if err := writeFileInDir(chartsDir, chartFileName, chartData, cacheFilePerm); err != nil {
 		return fmt.Errorf("write chart file: %w", err)
 	}
 	lock := ChartLock{
@@ -487,8 +527,7 @@ func writeHelmFiles(repos []provider.Repo, chartsDir string, mode RepoRefMode, c
 	if err != nil {
 		return fmt.Errorf("marshal lock file: %w", err)
 	}
-	lockFile := filepath.Join(chartsDir, lockFileName)
-	if err := os.WriteFile(lockFile, lockData, 0o644); err != nil {
+	if err := writeFileInDir(chartsDir, lockFileName, lockData, cacheFilePerm); err != nil {
 		return fmt.Errorf("write lock file: %w", err)
 	}
 	return nil
@@ -503,8 +542,7 @@ func loadChartMetadata(chartsDir, chartName, chartDesc string) (ChartFile, error
 		Type:        "application",
 	}
 
-	path := filepath.Join(chartsDir, chartFileName)
-	data, err := os.ReadFile(path)
+	data, err := readFileInDir(chartsDir, chartFileName)
 	switch {
 	case err == nil:
 		var current ChartFile
@@ -618,8 +656,7 @@ func detectRefMode(lock *ChartLock) RepoRefMode {
 }
 
 func readLockFile(chartsDir string) (*ChartLock, error) {
-	lockFilePath := filepath.Join(chartsDir, lockFileName)
-	data, err := os.ReadFile(lockFilePath)
+	data, err := readFileInDir(chartsDir, lockFileName)
 	if err != nil {
 		return nil, err
 	}
@@ -632,7 +669,7 @@ func readLockFile(chartsDir string) (*ChartLock, error) {
 
 func replaceChartDir(src, dest string) error {
 	parent := filepath.Dir(dest)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, cacheDirPerm); err != nil {
 		return fmt.Errorf("ensure chart parent dir: %w", err)
 	}
 
@@ -681,53 +718,78 @@ func replaceChartDir(src, dest string) error {
 }
 
 func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+	srcRoot, err := os.OpenRoot(src)
+	if err != nil {
+		return fmt.Errorf("open source root: %w", err)
+	}
+	defer func() { _ = srcRoot.Close() }()
 
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
+	if err := os.MkdirAll(dst, cacheDirPerm); err != nil {
+		return fmt.Errorf("create dest dir: %w", err)
+	}
+	dstRoot, err := os.OpenRoot(dst)
+	if err != nil {
+		return fmt.Errorf("open dest root: %w", err)
+	}
+	defer func() { _ = dstRoot.Close() }()
 
-		if rel == metaFileName {
+	return fs.WalkDir(srcRoot.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == "." {
+			return nil
+		}
+		if path == metaFileName {
 			return nil
 		}
 
-		target := filepath.Join(dst, rel)
-
+		nativePath := filepath.FromSlash(path)
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-
-		if d.Type()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return fmt.Errorf("resolve symlink %s: %w", rel, err)
+			if mkErr := dstRoot.Mkdir(nativePath, cacheDirPerm); mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
+				return mkErr
 			}
-			if !isWithin(src, resolved) {
-				return fmt.Errorf("symlink %s points outside source tree", rel)
-			}
+			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		// Open via srcRoot — the kernel refuses to traverse symlinks
+		// that escape the source tree, so a symlink to /etc/passwd fails here.
+		srcFile, err := srcRoot.Open(nativePath)
 		if err != nil {
-			return err
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 
-		info, err := os.Stat(path)
+		info, err := srcFile.Stat()
 		if err != nil {
+			_ = srcFile.Close()
 			return err
 		}
 		if info.IsDir() {
-			return fmt.Errorf("unsupported directory symlink %s", rel)
+			_ = srcFile.Close()
+			return fmt.Errorf("unsupported directory entry %s", path)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("unsupported file mode %s for %s", info.Mode().String(), rel)
+			_ = srcFile.Close()
+			return fmt.Errorf("unsupported file mode %s for %s", info.Mode().String(), path)
 		}
 
-		return os.WriteFile(target, data, info.Mode().Perm())
+		data, readErr := io.ReadAll(srcFile)
+		if closeErr := srcFile.Close(); closeErr != nil && readErr == nil {
+			readErr = closeErr
+		}
+		if readErr != nil {
+			return readErr
+		}
+
+		dstFile, err := dstRoot.OpenFile(nativePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		if _, err := dstFile.Write(data); err != nil {
+			_ = dstFile.Close()
+			return err
+		}
+		return dstFile.Close()
 	})
 }
 
@@ -743,17 +805,6 @@ func normalizeChartsDir(chartsDir string) (string, error) {
 		return "", fmt.Errorf("charts_dir must not contain '..', got %q", chartsDir)
 	}
 	return cleaned, nil
-}
-
-func isWithin(base, target string) bool {
-	base = filepath.Clean(base)
-	target = filepath.Clean(target)
-
-	rel, err := filepath.Rel(base, target)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
 func outWriter(opts BootstrapOptions) io.Writer {
