@@ -35,31 +35,33 @@ type Config struct {
 }
 
 func Load(cfgFile string) (*Config, error) {
+	v := viper.New()
+
 	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
+		v.SetConfigFile(cfgFile)
 	} else {
-		viper.AddConfigPath(".")
-		viper.SetConfigName("helmseed")
-		viper.SetConfigType("yaml")
+		v.AddConfigPath(".")
+		v.SetConfigName("helmseed")
+		v.SetConfigType("yaml")
 	}
 
-	viper.SetDefault("cache_ttl", "24h")
-	viper.SetDefault("charts_dir", ".helm")
-	viper.SetDefault("cache_dir", "")
-	viper.SetDefault("non_interactive", false)
+	v.SetDefault("cache_ttl", "24h")
+	v.SetDefault("charts_dir", ".helm")
+	v.SetDefault("cache_dir", "")
+	v.SetDefault("non_interactive", false)
 
-	viper.SetEnvPrefix("HELMSEED")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	viper.AutomaticEnv()
+	v.SetEnvPrefix("HELMSEED")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("failed to read config: %w", err)
 		}
 	}
 
 	var c Config
-	if err := viper.Unmarshal(&c); err != nil {
+	if err := v.Unmarshal(&c); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 

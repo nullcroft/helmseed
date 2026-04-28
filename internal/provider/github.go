@@ -4,18 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/go-github/v71/github"
 )
 
+const httpClientTimeout = 30 * time.Second
+
 type gitHubProvider struct {
 	client *github.Client
 }
 
 func newGitHubProvider(token string) *gitHubProvider {
-	client := github.NewClient(nil)
+	client := github.NewClient(&http.Client{Timeout: httpClientTimeout})
 	if token != "" {
 		client = client.WithAuthToken(token)
 	}
@@ -31,7 +34,10 @@ func (p *gitHubProvider) ListRepos(ctx context.Context, group string) ([]Repo, e
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
+	pages := 0
 	for {
+		pages++
+		slog.Debug("github: list repos page", "org", group, "page", opts.Page)
 		repos, resp, err := p.client.Repositories.ListByOrg(ctx, group, opts)
 
 		if err != nil {
@@ -57,6 +63,7 @@ func (p *gitHubProvider) ListRepos(ctx context.Context, group string) ([]Repo, e
 		opts.Page = resp.NextPage
 	}
 
+	slog.Debug("github: list repos done", "org", group, "pages", pages, "repos", len(all))
 	return all, nil
 }
 

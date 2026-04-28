@@ -2,6 +2,7 @@ package cache
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -13,24 +14,26 @@ import (
 const progressMaxWidth = 80
 
 var (
-	quiet bool
-	pink  = lipgloss.Color("#FF7CCB")
-	gold  = lipgloss.Color("#FDFF8C")
+	pink = lipgloss.Color("#FF7CCB")
+	gold = lipgloss.Color("#FDFF8C")
 )
-
-func SetQuiet(q bool) { quiet = q }
 
 type Progress struct {
 	bar     progress.Model
 	label   string
 	total   int64
 	current int64
+	out     io.Writer
+	quiet   bool
 	mu      sync.Mutex
 }
 
-func NewProgress(label string, total int) *Progress {
+func NewProgress(label string, total int, out io.Writer, quiet bool) *Progress {
 	if total < 1 {
 		total = 1
+	}
+	if out == nil {
+		out = os.Stdout
 	}
 	bar := progress.New(
 		progress.WithScaled(true),
@@ -42,39 +45,38 @@ func NewProgress(label string, total int) *Progress {
 		bar:   bar,
 		label: label,
 		total: int64(total),
+		out:   out,
+		quiet: quiet,
 	}
 }
 
 func (p *Progress) Start() {
-	if quiet {
+	if p.quiet {
 		return
 	}
 	atomic.StoreInt64(&p.current, 0)
 	p.mu.Lock()
-	fmt.Printf("%s: %s", p.label, p.bar.ViewAs(0))
-	_ = os.Stdout.Sync()
+	_, _ = fmt.Fprintf(p.out, "%s: %s", p.label, p.bar.ViewAs(0))
 	p.mu.Unlock()
 }
 
 func (p *Progress) Add() {
 	cur := atomic.AddInt64(&p.current, 1)
-	if quiet {
+	if p.quiet {
 		return
 	}
 	percent := float64(cur) / float64(p.total)
 	if percent > 1.0 {
 		percent = 1.0
 	}
-	view := p.bar.ViewAs(percent)
 	p.mu.Lock()
-	fmt.Printf("\r%s: %s", p.label, view)
-	_ = os.Stdout.Sync()
+	_, _ = fmt.Fprintf(p.out, "\r%s: %s", p.label, p.bar.ViewAs(percent))
 	p.mu.Unlock()
 }
 
 func (p *Progress) Finish() {
-	if quiet {
+	if p.quiet {
 		return
 	}
-	fmt.Println()
+	_, _ = fmt.Fprintln(p.out)
 }

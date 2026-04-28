@@ -42,7 +42,7 @@ func initBareRepo(t *testing.T, dir, branch string) string {
 	if err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if _, err := f.WriteString("name: test\n"); err != nil {
+	if _, err := f.WriteString("name: test\nversion: 1.0.0\n"); err != nil {
 		_ = f.Close()
 		t.Fatalf("write file: %v", err)
 	}
@@ -282,6 +282,9 @@ func TestBootstrap_SkipsExistingCharts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "marker.txt"), []byte("keep"), 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dest, "Chart.yaml"), []byte("name: existing\nversion: 9.9.9\n"), 0o644); err != nil {
+		t.Fatalf("write existing chart: %v", err)
+	}
 
 	repos := []provider.Repo{
 		{Name: "existing", CloneURL: bare1, HTTPSURL: "https://example.com/existing", DefaultBranch: "master"},
@@ -298,6 +301,21 @@ func TestBootstrap_SkipsExistingCharts(t *testing.T) {
 	}
 	if string(data) != "keep" {
 		t.Errorf("marker.txt content changed: got %q", string(data))
+	}
+
+	lockData, err := os.ReadFile(filepath.Join(testChartsDir, lockFileName))
+	if err != nil {
+		t.Fatalf("lock file missing: %v", err)
+	}
+	var lock ChartLock
+	if err := yaml.Unmarshal(lockData, &lock); err != nil {
+		t.Fatalf("invalid lock file: %v", err)
+	}
+	if len(lock.Dependencies) != 1 {
+		t.Fatalf("expected 1 dependency, got %d", len(lock.Dependencies))
+	}
+	if lock.Dependencies[0].Version != "9.9.9" {
+		t.Fatalf("expected lock version from existing chart, got %q", lock.Dependencies[0].Version)
 	}
 }
 

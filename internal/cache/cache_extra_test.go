@@ -1,9 +1,11 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,25 +75,26 @@ func TestCacheDir_Traversal(t *testing.T) {
 func TestReadChartVersion(t *testing.T) {
 	dir := t.TempDir()
 	// Missing Chart.yaml
-	ver := readChartVersion(dir)
-	if ver != "0.0.0" {
-		t.Errorf("version = %q, want 0.0.0", ver)
+	if _, err := readChartVersion(dir); err == nil {
+		t.Fatal("expected error for missing Chart.yaml")
 	}
 
 	// Invalid YAML
 	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("not yaml: ["), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ver = readChartVersion(dir)
-	if ver != "0.0.0" {
-		t.Errorf("version = %q, want 0.0.0", ver)
+	if _, err := readChartVersion(dir); err == nil {
+		t.Fatal("expected error for invalid Chart.yaml")
 	}
 
 	// Valid YAML with version
 	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("version: 1.2.3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ver = readChartVersion(dir)
+	ver, err := readChartVersion(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if ver != "1.2.3" {
 		t.Errorf("version = %q, want 1.2.3", ver)
 	}
@@ -222,6 +225,26 @@ func TestCopyDir(t *testing.T) {
 	}
 }
 
+func TestCopyDir_RejectsSymlinkOutsideSource(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	outsideDir := t.TempDir()
+
+	outsideFile := filepath.Join(outsideDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	linkPath := filepath.Join(src, "outside.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if err := copyDir(src, dst); err == nil {
+		t.Fatal("expected error for symlink escaping source tree")
+	}
+}
+
 func TestBootstrap_InvalidRepoName(t *testing.T) {
 	tmpDir := t.TempDir()
 	repos := []provider.Repo{{Name: "../bad", CloneURL: "", HTTPSURL: "", DefaultBranch: "main"}}
@@ -251,21 +274,21 @@ func TestBootstrap_ChartsDirWithDotDot(t *testing.T) {
 }
 
 func TestUpdate_NoLockFile(t *testing.T) {
-	dir := t.TempDir()
-	opts := BootstrapOptions{TTL: time.Hour, ChartsDir: dir}
-	err := Update(context.Background(), opts)
+	cacheBase := t.TempDir()
+	chartsDir := t.TempDir()
+	err := updateWithCacheDir(context.Background(), cacheBase, chartsDir, BootstrapOptions{})
 	if err == nil {
 		t.Fatal("expected error when lock file is missing")
 	}
 }
 
 func TestUpdate_EmptyLock(t *testing.T) {
-	dir := t.TempDir()
+	cacheBase := t.TempDir()
+	chartsDir := t.TempDir()
 	lock := ChartLock{Generated: time.Now().UTC(), Digest: "", Dependencies: nil}
 	data, _ := yaml.Marshal(lock)
-	_ = os.WriteFile(filepath.Join(dir, "Chart.lock"), data, 0o644)
-	opts := BootstrapOptions{TTL: time.Hour, ChartsDir: dir}
-	err := Update(context.Background(), opts)
+	_ = os.WriteFile(filepath.Join(chartsDir, "Chart.lock"), data, 0o644)
+	err := updateWithCacheDir(context.Background(), cacheBase, chartsDir, BootstrapOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty lock")
 	}
@@ -304,6 +327,16 @@ func TestPrepareRepos(t *testing.T) {
 	_, err = prepareRepos([]provider.Repo{{Name: "../bad"}}, "")
 	if err == nil {
 		t.Error("expected error for invalid repo name")
+	}
+
+	_, err = prepareRepos([]provider.Repo{{Name: "chart-a"}, {Name: "a"}}, "chart-")
+	if err == nil {
+		t.Fatal("expected duplicate name error after prefix normalization")
+	}
+
+	_, err = prepareRepos([]provider.Repo{{Name: "chart-"}}, "chart-")
+	if err == nil {
+		t.Fatal("expected empty name error after prefix normalization")
 	}
 }
 
@@ -356,10 +389,10 @@ func TestCopyRepos(t *testing.T) {
 
 	// Set up cache entry
 	_ = os.MkdirAll(filepath.Join(cacheBase, "repo-a"), 0o755)
-	_ = os.WriteFile(filepath.Join(cacheBase, "repo-a", "Chart.yaml"), []byte("name: a\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(cacheBase, "repo-a", "Chart.yaml"), []byte("name: a\nversion: 1.0.0\n"), 0o644)
 
 	repos := []provider.Repo{{Name: "repo-a"}}
-	if err := copyRepos(repos, cacheBase, chartsDir); err != nil {
+	if err := copyRepos(repos, cacheBase, chartsDir, BootstrapOptions{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
@@ -367,15 +400,25 @@ func TestCopyRepos(t *testing.T) {
 	}
 
 	// Second copy should skip existing
-	if err := copyRepos(repos, cacheBase, chartsDir); err != nil {
+	if err := copyRepos(repos, cacheBase, chartsDir, BootstrapOptions{}); err != nil {
 		t.Fatalf("second copy error: %v", err)
 	}
 }
 
-func TestWarnOutdated(t *testing.T) {
-	// Should not panic and should not print when quiet is false and outdated is empty
-	warnOutdated(nil)
-	warnOutdated([]string{"a", "b"})
+func TestWarnSkippedExisting(t *testing.T) {
+	var out bytes.Buffer
+	opts := BootstrapOptions{Out: &out}
+	warnSkippedExisting([]provider.Repo{{Name: "a"}, {Name: "b"}}, opts)
+	if !strings.Contains(out.String(), "already exist and were left unchanged") {
+		t.Fatalf("unexpected warning output %q", out.String())
+	}
+
+	out.Reset()
+	opts.Quiet = true
+	warnSkippedExisting([]provider.Repo{{Name: "a"}}, opts)
+	if out.Len() != 0 {
+		t.Fatalf("quiet mode should not print warnings, got %q", out.String())
+	}
 }
 
 func TestReposFromLock(t *testing.T) {
@@ -406,26 +449,48 @@ func TestReposFromLock(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing meta")
 	}
+
+	lock3 := &ChartLock{Dependencies: []LockDependency{{Name: "../bad", Repository: "", Version: ""}}}
+	_, err = reposFromLock(lock3, base)
+	if err == nil {
+		t.Error("expected error for invalid dependency name")
+	}
+
+	lock4 := &ChartLock{Dependencies: []LockDependency{
+		{Name: "repo-a", Repository: "", Version: ""},
+		{Name: "repo-a", Repository: "", Version: ""},
+	}}
+	_, err = reposFromLock(lock4, base)
+	if err == nil {
+		t.Error("expected error for duplicate dependency names")
+	}
 }
 
-func TestUpdateCopyCached(t *testing.T) {
+func TestReplaceChartDir(t *testing.T) {
 	tmp := t.TempDir()
 	base := filepath.Join(tmp, "cache")
 	chartsDir := filepath.Join(tmp, ".helm")
-	_ = os.MkdirAll(filepath.Join(base, "repo-a"), 0o755)
-	_ = os.WriteFile(filepath.Join(base, "repo-a", "Chart.yaml"), []byte("name: a\n"), 0o644)
+	src := filepath.Join(base, "repo-a")
+	_ = os.MkdirAll(src, 0o755)
+	_ = os.WriteFile(filepath.Join(src, "Chart.yaml"), []byte("name: a\nversion: 1.0.0\n"), 0o644)
 	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
 
-	repos := []provider.Repo{{Name: "repo-a"}}
-	if err := updateCopyCached(repos, base, chartsDir); err != nil {
+	dest := filepath.Join(chartsDir, "charts", "repo-a")
+	_ = os.MkdirAll(dest, 0o755)
+	_ = os.WriteFile(filepath.Join(dest, "stale.txt"), []byte("stale"), 0o644)
+
+	if err := replaceChartDir(src, dest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(dest, "Chart.yaml")); err != nil {
 		t.Errorf("copied chart missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("old chart files should be replaced")
 	}
 }
 
-func TestUpdateCloneAndCopyStale(t *testing.T) {
+func TestUpdateWithCacheDir_ClonesAll(t *testing.T) {
 	bareDir := t.TempDir()
 	bare1 := initBareRepo(t, bareDir, "repo-a")
 
@@ -434,12 +499,307 @@ func TestUpdateCloneAndCopyStale(t *testing.T) {
 	chartsDir := filepath.Join(tmp, ".helm")
 	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
 
-	repos := []provider.Repo{{Name: "repo-a", CloneURL: bare1, HTTPSURL: "https://example.com/repo-a", DefaultBranch: "master"}}
-	ctx := context.Background()
-	if err := updateCloneAndCopyStale(ctx, repos, base, chartsDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cacheEntry := filepath.Join(base, "repo-a")
+	_ = os.MkdirAll(cacheEntry, 0o755)
+	_ = writeMeta(cacheEntry, Meta{
+		ClonedAt:      time.Now(),
+		CloneURL:      bare1,
+		HTTPSURL:      "https://example.com/repo-a",
+		DefaultBranch: "master",
+		Commit:        "old",
+	})
+
+	lock := ChartLock{
+		Generated: time.Now().UTC(),
+		Digest:    "digest",
+		Dependencies: []LockDependency{
+			{Name: "repo-a", Repository: "https://example.com/repo-a", Version: "1.0.0"},
+		},
 	}
+	lockData, err := yaml.Marshal(lock)
+	if err != nil {
+		t.Fatalf("marshal lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartsDir, lockFileName), lockData, 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	if err := updateWithCacheDir(context.Background(), base, chartsDir, BootstrapOptions{}); err != nil {
+		t.Fatalf("updateWithCacheDir error: %v", err)
+	}
+
 	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", "Chart.yaml")); err != nil {
 		t.Errorf("cloned chart missing: %v", err)
 	}
+
+	meta, err := readMeta(filepath.Join(base, "repo-a"))
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if meta.Commit == "old" {
+		t.Fatal("expected repo to be re-cloned during update")
+	}
+}
+
+func TestUpdateWithCacheDir_PreservesChartMetadata(t *testing.T) {
+	bareDir := t.TempDir()
+	bare1 := initBareRepo(t, bareDir, "repo-a")
+
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, ".helm")
+	_ = os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755)
+
+	cacheEntry := filepath.Join(base, "repo-a")
+	_ = os.MkdirAll(cacheEntry, 0o755)
+	_ = writeMeta(cacheEntry, Meta{
+		ClonedAt:      time.Now(),
+		CloneURL:      bare1,
+		HTTPSURL:      "https://example.com/repo-a",
+		DefaultBranch: "master",
+	})
+
+	lock := ChartLock{
+		Generated: time.Now().UTC(),
+		Digest:    "digest",
+		Dependencies: []LockDependency{
+			{Name: "repo-a", Repository: "https://example.com/repo-a", Version: "1.0.0"},
+		},
+	}
+	lockData, err := yaml.Marshal(lock)
+	if err != nil {
+		t.Fatalf("marshal lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartsDir, lockFileName), lockData, 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	existingChart := ChartFile{
+		APIVersion:  "v2",
+		Name:        "custom-name",
+		Description: "custom-description",
+		Version:     "2.3.4",
+		Type:        "application",
+	}
+	existingChartData, err := yaml.Marshal(existingChart)
+	if err != nil {
+		t.Fatalf("marshal existing chart: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartsDir, chartFileName), existingChartData, 0o644); err != nil {
+		t.Fatalf("write existing chart: %v", err)
+	}
+
+	if err := updateWithCacheDir(context.Background(), base, chartsDir, BootstrapOptions{}); err != nil {
+		t.Fatalf("updateWithCacheDir error: %v", err)
+	}
+
+	updatedData, err := os.ReadFile(filepath.Join(chartsDir, chartFileName))
+	if err != nil {
+		t.Fatalf("read chart: %v", err)
+	}
+	var updated ChartFile
+	if err := yaml.Unmarshal(updatedData, &updated); err != nil {
+		t.Fatalf("parse chart: %v", err)
+	}
+	if updated.Name != "custom-name" || updated.Description != "custom-description" || updated.Version != "2.3.4" {
+		t.Fatalf("expected existing metadata to be preserved, got %+v", updated)
+	}
+	if len(updated.Dependencies) != 1 || updated.Dependencies[0].Name != "repo-a" {
+		t.Fatalf("expected updated dependencies, got %+v", updated.Dependencies)
+	}
+}
+
+func TestLoadChartMetadata_NoExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	chart, err := loadChartMetadata(dir, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chart.APIVersion != "v2" || chart.Name != "placeholder" {
+		t.Errorf("expected defaults, got %+v", chart)
+	}
+}
+
+func TestLoadChartMetadata_OverridesPreserveExistingWhenFlagsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	existing := ChartFile{
+		APIVersion:  "v2",
+		Name:        "keep-me",
+		Description: "keep-desc",
+		Version:     "9.9.9",
+		Type:        "library",
+	}
+	data, err := yaml.Marshal(existing)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, chartFileName), data, 0o644); err != nil {
+		t.Fatalf("write chart: %v", err)
+	}
+
+	chart, err := loadChartMetadata(dir, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chart.Name != "keep-me" || chart.Description != "keep-desc" || chart.Version != "9.9.9" || chart.Type != "library" {
+		t.Errorf("existing fields not preserved: %+v", chart)
+	}
+}
+
+func TestLoadChartMetadata_FlagsOverrideExisting(t *testing.T) {
+	dir := t.TempDir()
+	existing := ChartFile{APIVersion: "v2", Name: "old", Description: "old-desc", Version: "1.0.0", Type: "application"}
+	data, err := yaml.Marshal(existing)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, chartFileName), data, 0o644); err != nil {
+		t.Fatalf("write chart: %v", err)
+	}
+
+	chart, err := loadChartMetadata(dir, "new-name", "new-desc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chart.Name != "new-name" || chart.Description != "new-desc" {
+		t.Errorf("flags did not override existing: %+v", chart)
+	}
+	if chart.Version != "1.0.0" {
+		t.Errorf("version should still come from existing chart, got %q", chart.Version)
+	}
+}
+
+func TestLoadChartMetadata_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, chartFileName), []byte("not yaml: ["), 0o644); err != nil {
+		t.Fatalf("write chart: %v", err)
+	}
+	if _, err := loadChartMetadata(dir, "", ""); err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestPartitionRepos_ZeroTTL(t *testing.T) {
+	tmp := t.TempDir()
+	freshDir := filepath.Join(tmp, "fresh")
+	_ = os.MkdirAll(freshDir, 0o755)
+	_ = writeMeta(freshDir, Meta{ClonedAt: time.Now()})
+
+	repos := []provider.Repo{{Name: "fresh"}}
+	cached, stale := partitionRepos(repos, tmp, 0)
+	if len(cached) != 0 {
+		t.Errorf("zero TTL should mark every repo stale, got cached=%v", cached)
+	}
+	if len(stale) != 1 {
+		t.Errorf("expected stale entry, got %v", stale)
+	}
+}
+
+func TestCloneAndCopyStale_NoStale(t *testing.T) {
+	tmp := t.TempDir()
+	chartsDir := filepath.Join(tmp, ".helm")
+	if err := os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	err := cloneAndCopyStale(context.Background(), nil, tmp, chartsDir, BootstrapOptions{Quiet: true})
+	if err != nil {
+		t.Fatalf("expected no-op success, got %v", err)
+	}
+}
+
+func TestOutWriter_DefaultsToStdout(t *testing.T) {
+	if got := outWriter(BootstrapOptions{}); got != os.Stdout {
+		t.Errorf("nil Out should default to os.Stdout, got %T", got)
+	}
+	var buf bytes.Buffer
+	if got := outWriter(BootstrapOptions{Out: &buf}); got != &buf {
+		t.Errorf("explicit Out should be returned as-is")
+	}
+}
+
+func TestLogf_QuietSuppresses(t *testing.T) {
+	var buf bytes.Buffer
+	logf(BootstrapOptions{Out: &buf, Quiet: true}, "hello %s", "world")
+	if buf.Len() != 0 {
+		t.Errorf("quiet should suppress output, got %q", buf.String())
+	}
+
+	logf(BootstrapOptions{Out: &buf}, "hello %s", "world")
+	if buf.String() != "hello world" {
+		t.Errorf("expected formatted output, got %q", buf.String())
+	}
+}
+
+func TestUpdate_PublicWrapperRejectsBadCacheDir(t *testing.T) {
+	err := Update(context.Background(), BootstrapOptions{CacheDir: "relative/cache"})
+	if err == nil {
+		t.Fatal("expected error for relative cache_dir via public Update")
+	}
+}
+
+func TestUpdate_PublicWrapperRejectsBadChartsDir(t *testing.T) {
+	err := Update(context.Background(), BootstrapOptions{ChartsDir: "/abs/charts"})
+	if err == nil {
+		t.Fatal("expected error for absolute charts_dir via public Update")
+	}
+}
+
+func FuzzIsValidRepoName(f *testing.F) {
+	for _, seed := range []string{"foo", "", ".", "..", "../etc", "foo/bar", "foo\\bar", ".hidden", "foo-bar_1"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		valid := isValidRepoName(name)
+		if !valid {
+			return
+		}
+		if name == "" || name == "." || name == ".." {
+			t.Fatalf("validator accepted forbidden literal %q", name)
+		}
+		if strings.Contains(name, "..") {
+			t.Fatalf("validator accepted name containing '..': %q", name)
+		}
+		if strings.ContainsAny(name, "/\\") {
+			t.Fatalf("validator accepted path separator in: %q", name)
+		}
+		if strings.HasPrefix(name, ".") {
+			t.Fatalf("validator accepted hidden-style name: %q", name)
+		}
+	})
+}
+
+func FuzzNormalizeChartsDir(f *testing.F) {
+	for _, seed := range []string{"", ".helm", "charts", "../escape", "/abs", "a/b/c"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, dir string) {
+		got, err := normalizeChartsDir(dir)
+		if err != nil {
+			return
+		}
+		if filepath.IsAbs(got) {
+			t.Fatalf("normalized dir is absolute: %q (input %q)", got, dir)
+		}
+		if strings.Contains(got, "..") {
+			t.Fatalf("normalized dir contains '..': %q (input %q)", got, dir)
+		}
+	})
+}
+
+func FuzzValidateAbsCachePath(f *testing.F) {
+	for _, seed := range []string{"", "/tmp/cache", "/a/../b", "relative", "/a"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, path string) {
+		got, err := validateAbsCachePath(path, "fuzz")
+		if err != nil {
+			return
+		}
+		if !filepath.IsAbs(got) {
+			t.Fatalf("accepted non-absolute path: %q (input %q)", got, path)
+		}
+		if strings.Contains(got, "..") {
+			t.Fatalf("accepted path with '..': %q (input %q)", got, path)
+		}
+	})
 }

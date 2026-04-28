@@ -51,12 +51,12 @@ func TestGitHubProviderImplementsRater(t *testing.T) {
 	}
 }
 
-func TestGitLabProviderDoesNotImplementRater(t *testing.T) {
+func TestGitLabProviderImplementsRater(t *testing.T) {
 	p, err := newGitLabProvider("", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := interface{}(p).(Rater); ok {
-		t.Error("*gitLabProvider should not implement Rater")
+	if _, ok := interface{}(p).(Rater); !ok {
+		t.Error("*gitLabProvider should implement Rater")
 	}
 }

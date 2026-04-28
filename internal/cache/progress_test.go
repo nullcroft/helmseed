@@ -1,9 +1,13 @@
 package cache
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestNewProgress(t *testing.T) {
-	p := NewProgress("cloning", 10)
+	p := NewProgress("cloning", 10, &bytes.Buffer{}, false)
 	if p == nil {
 		t.Fatal("expected non-nil Progress")
 	}
@@ -16,29 +20,33 @@ func TestNewProgress(t *testing.T) {
 }
 
 func TestNewProgress_ZeroTotal(t *testing.T) {
-	p := NewProgress("test", 0)
+	p := NewProgress("test", 0, &bytes.Buffer{}, false)
 	if p.total != 1 {
 		t.Errorf("total = %d, want 1", p.total)
 	}
 }
 
 func TestProgressQuiet(t *testing.T) {
-	SetQuiet(true)
-	defer SetQuiet(false)
+	var out bytes.Buffer
 
-	p := NewProgress("test", 5)
+	p := NewProgress("test", 5, &out, true)
 	p.Start()
 	p.Add()
 	p.Finish()
-	// Should not panic when quiet
+	if out.Len() != 0 {
+		t.Fatalf("expected no output in quiet mode, got %q", out.String())
+	}
 }
 
 func TestProgressNonQuiet(t *testing.T) {
-	SetQuiet(false)
+	var out bytes.Buffer
 
-	p := NewProgress("test", 5)
+	p := NewProgress("test", 5, &out, false)
 	p.Start()
 	p.Add()
 	p.Finish()
-	// Should not panic when not quiet
+	got := out.String()
+	if !strings.Contains(got, "test:") {
+		t.Fatalf("expected progress label in output, got %q", got)
+	}
 }
