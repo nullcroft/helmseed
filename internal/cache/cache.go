@@ -23,13 +23,14 @@ import (
 )
 
 const (
-	defaultChartsDir = ".helm"
-	chartFileName    = "Chart.yaml"
-	lockFileName     = "Chart.lock"
-	metaFileName     = "meta.json"
-	maxWorkers       = 5
-	cloneTimeout     = 5 * time.Minute
-	errCopyFmt       = "copy %s from cache: %w"
+	defaultChartsDir      = ".helm"
+	chartFileName         = "Chart.yaml"
+	lockFileName          = "Chart.lock"
+	metaFileName          = "meta.json"
+	maxWorkers            = 5
+	cloneTimeout          = 5 * time.Minute
+	errCopyFmt            = "copy %s from cache: %w"
+	msgCopiedFromCacheFmt = "%s copied from cache\n"
 
 	cacheDirPerm  os.FileMode = 0o750
 	cacheFilePerm os.FileMode = 0o600
@@ -330,7 +331,7 @@ func copyRepos(repos []provider.Repo, cacheBase, chartsDir string, opts Bootstra
 		if err := copyDir(filepath.Join(cacheBase, r.Name), dest); err != nil {
 			return fmt.Errorf(errCopyFmt, r.Name, err)
 		}
-		logf(opts, "%s copied from cache\n", r.Name)
+		logf(opts, msgCopiedFromCacheFmt, r.Name)
 	}
 	return nil
 }
@@ -351,7 +352,7 @@ func cloneAndCopyStale(ctx context.Context, stale []provider.Repo, cacheBase, ch
 		if err := copyDir(filepath.Join(cacheBase, r.Name), dest); err != nil {
 			return fmt.Errorf(errCopyFmt, r.Name, err)
 		}
-		logf(opts, "%s copied from cache\n", r.Name)
+		logf(opts, msgCopiedFromCacheFmt, r.Name)
 	}
 	return nil
 }
@@ -613,7 +614,7 @@ func updateWithCacheDir(ctx context.Context, base, chartsDir string, opts Bootst
 		if err := replaceChartDir(filepath.Join(base, r.Name), filepath.Join(chartsDir, "charts", r.Name)); err != nil {
 			return fmt.Errorf(errCopyFmt, r.Name, err)
 		}
-		logf(opts, "%s copied from cache\n", r.Name)
+		logf(opts, msgCopiedFromCacheFmt, r.Name)
 	}
 
 	return writeHelmFiles(repos, chartsDir, detectRefMode(lock), opts.ChartName, opts.ChartDesc)
@@ -677,35 +678,20 @@ func replaceChartDir(src, dest string) error {
 	if err != nil {
 		return fmt.Errorf("create temp chart dir: %w", err)
 	}
-	defer func() {
-		if err := os.RemoveAll(tmpDir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			slog.Warn("failed to remove temp chart dir", "path", tmpDir, "error", err)
-		}
-	}()
+	defer cleanupTempDir(tmpDir)
 
 	if err := copyDir(src, tmpDir); err != nil {
 		return err
 	}
 
 	backupPath := filepath.Join(parent, "."+filepath.Base(dest)+fmt.Sprintf(".old-%d", time.Now().UnixNano()))
-	hasExisting := false
-	if _, err := os.Stat(dest); err == nil {
-		hasExisting = true
-		if err := os.Rename(dest, backupPath); err != nil {
-			return fmt.Errorf("stage old chart dir: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat chart dir: %w", err)
+	hasExisting, err := stageExistingDest(dest, backupPath)
+	if err != nil {
+		return err
 	}
 
-	if err := os.Rename(tmpDir, dest); err != nil {
-		if hasExisting {
-			if rbErr := os.Rename(backupPath, dest); rbErr != nil {
-				slog.Error("failed to roll back chart dir; both new and old paths may be missing", "dest", dest, "backup", backupPath, "error", rbErr)
-				return fmt.Errorf("activate chart dir: %w (rollback also failed: %v)", err, rbErr)
-			}
-		}
-		return fmt.Errorf("activate chart dir: %w", err)
+	if err := activateChartDir(tmpDir, dest, backupPath, hasExisting); err != nil {
+		return err
 	}
 
 	if hasExisting {
@@ -715,6 +701,50 @@ func replaceChartDir(src, dest string) error {
 	}
 
 	return nil
+}
+
+// cleanupTempDir removes a leftover temp directory. A successful
+// activate-rename has already moved tmpDir to dest, so ErrNotExist is the
+// expected outcome and is silenced.
+func cleanupTempDir(tmpDir string) {
+	if err := os.RemoveAll(tmpDir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("failed to remove temp chart dir", "path", tmpDir, "error", err)
+	}
+}
+
+// stageExistingDest renames an existing dest to backupPath so the new chart
+// can be moved into place atomically. Returns hasExisting=false when dest
+// is absent (a fresh install).
+func stageExistingDest(dest, backupPath string) (bool, error) {
+	_, err := os.Stat(dest)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat chart dir: %w", err)
+	}
+	if err := os.Rename(dest, backupPath); err != nil {
+		return false, fmt.Errorf("stage old chart dir: %w", err)
+	}
+	return true, nil
+}
+
+// activateChartDir promotes tmpDir to dest. On failure, when a backup of
+// the prior chart exists, it is rolled back into dest; both legs failing
+// leaves the directory missing and is reported in the wrapped error.
+func activateChartDir(tmpDir, dest, backupPath string, hasExisting bool) error {
+	err := os.Rename(tmpDir, dest)
+	if err == nil {
+		return nil
+	}
+	if !hasExisting {
+		return fmt.Errorf("activate chart dir: %w", err)
+	}
+	if rbErr := os.Rename(backupPath, dest); rbErr != nil {
+		slog.Error("failed to roll back chart dir; both new and old paths may be missing", "dest", dest, "backup", backupPath, "error", rbErr)
+		return fmt.Errorf("activate chart dir: %w (rollback also failed: %v)", err, rbErr)
+	}
+	return fmt.Errorf("activate chart dir: %w", err)
 }
 
 func copyDir(src, dst string) error {
@@ -734,63 +764,78 @@ func copyDir(src, dst string) error {
 	defer func() { _ = dstRoot.Close() }()
 
 	return fs.WalkDir(srcRoot.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == "." {
-			return nil
-		}
-		if path == metaFileName {
-			return nil
-		}
-
-		nativePath := filepath.FromSlash(path)
-		if d.IsDir() {
-			if mkErr := dstRoot.Mkdir(nativePath, cacheDirPerm); mkErr != nil && !errors.Is(mkErr, fs.ErrExist) {
-				return mkErr
-			}
-			return nil
-		}
-
-		// Open via srcRoot — the kernel refuses to traverse symlinks
-		// that escape the source tree, so a symlink to /etc/passwd fails here.
-		srcFile, err := srcRoot.Open(nativePath)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-
-		info, err := srcFile.Stat()
-		if err != nil {
-			_ = srcFile.Close()
-			return err
-		}
-		if info.IsDir() {
-			_ = srcFile.Close()
-			return fmt.Errorf("unsupported directory entry %s", path)
-		}
-		if !info.Mode().IsRegular() {
-			_ = srcFile.Close()
-			return fmt.Errorf("unsupported file mode %s for %s", info.Mode().String(), path)
-		}
-
-		data, readErr := io.ReadAll(srcFile)
-		if closeErr := srcFile.Close(); closeErr != nil && readErr == nil {
-			readErr = closeErr
-		}
-		if readErr != nil {
-			return readErr
-		}
-
-		dstFile, err := dstRoot.OpenFile(nativePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err := dstFile.Write(data); err != nil {
-			_ = dstFile.Close()
-			return err
-		}
-		return dstFile.Close()
+		return copyDirEntry(srcRoot, dstRoot, path, d, walkErr)
 	})
+}
+
+func copyDirEntry(srcRoot, dstRoot *os.Root, path string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if path == "." || path == metaFileName {
+		return nil
+	}
+
+	nativePath := filepath.FromSlash(path)
+	if d.IsDir() {
+		if err := dstRoot.Mkdir(nativePath, cacheDirPerm); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		return nil
+	}
+	return copyDirFile(srcRoot, dstRoot, path, nativePath)
+}
+
+func copyDirFile(srcRoot, dstRoot *os.Root, path, nativePath string) error {
+	// Open via srcRoot — the kernel refuses to traverse symlinks
+	// that escape the source tree, so a symlink to /etc/passwd fails here.
+	srcFile, err := srcRoot.Open(nativePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+
+	data, mode, err := readRegularFile(srcFile, path)
+	if err != nil {
+		return err
+	}
+	return writeFileTo(dstRoot, nativePath, data, mode)
+}
+
+func readRegularFile(srcFile *os.File, path string) ([]byte, os.FileMode, error) {
+	info, err := srcFile.Stat()
+	if err != nil {
+		_ = srcFile.Close()
+		return nil, 0, err
+	}
+	if info.IsDir() {
+		_ = srcFile.Close()
+		return nil, 0, fmt.Errorf("unsupported directory entry %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		_ = srcFile.Close()
+		return nil, 0, fmt.Errorf("unsupported file mode %s for %s", info.Mode().String(), path)
+	}
+
+	data, readErr := io.ReadAll(srcFile)
+	if closeErr := srcFile.Close(); closeErr != nil && readErr == nil {
+		readErr = closeErr
+	}
+	if readErr != nil {
+		return nil, 0, readErr
+	}
+	return data, info.Mode().Perm(), nil
+}
+
+func writeFileTo(dstRoot *os.Root, nativePath string, data []byte, mode os.FileMode) error {
+	dstFile, err := dstRoot.OpenFile(nativePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := dstFile.Write(data); err != nil {
+		_ = dstFile.Close()
+		return err
+	}
+	return dstFile.Close()
 }
 
 func normalizeChartsDir(chartsDir string) (string, error) {
