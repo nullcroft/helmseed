@@ -23,6 +23,10 @@ This ignores the cache TTL and always re-clones from the remote.`,
 			out := cmd.OutOrStdout()
 
 			displayChartsDir := chartsDirForDisplay(cfg.ChartsDir)
+			if flags.dryRun {
+				_, _ = fmt.Fprintf(out, "Would re-fetch all charts from %s/Chart.lock into %s/charts/\n", displayChartsDir, displayChartsDir)
+				return nil
+			}
 			if !flags.yes && !cfg.NonInteractive {
 				_, _ = fmt.Fprintf(out, "This will re-fetch all charts from %s/Chart.lock into %s/charts/ [y/N]? ", displayChartsDir, displayChartsDir)
 				if !confirmYes(cmd.InOrStdin()) {
