@@ -6,11 +6,20 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nullcroft/helmseed/internal/cache"
 	"github.com/nullcroft/helmseed/internal/config"
 	"github.com/nullcroft/helmseed/internal/provider"
 )
+
+type probeFailingProvider struct {
+	staticProvider
+}
+
+func (probeFailingProvider) RateLimit(context.Context) (int, int, time.Time, error) {
+	return 0, 0, time.Time{}, errors.New("headers unavailable")
+}
 
 func TestBootstrap_LocalAndRemoteMutuallyExclusive(t *testing.T) {
 	deps := Dependencies{
@@ -136,6 +145,18 @@ func TestBootstrap_ProviderListError(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !errors.Is(err, wantErr) {
 		t.Fatalf("expected wrapped upstream error, got %v", err)
+	}
+}
+
+func TestWarnIfRateLimitedProbeFailureWarnsOnly(t *testing.T) {
+	var errOut bytes.Buffer
+	p := probeFailingProvider{}
+
+	if err := warnIfRateLimited(context.Background(), p, "gitlab", &errOut); err != nil {
+		t.Fatalf("warnIfRateLimited should not block on probe failure: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "Warning:") || !strings.Contains(errOut.String(), "headers unavailable") {
+		t.Fatalf("expected warning output, got %q", errOut.String())
 	}
 }
 

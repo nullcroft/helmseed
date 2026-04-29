@@ -123,8 +123,8 @@ func resolveBootstrapMode(local, remote bool) (cache.RepoRefMode, error) {
 	return cache.RemoteRef, nil
 }
 
-// warnIfRateLimited prints a warning when CheckRateLimit reports a
-// RateLimitError; any other error is propagated to the caller.
+// warnIfRateLimited prints a warning when rate-limit probing is exhausted,
+// low, or unavailable. A failed probe should not block the real operation.
 func warnIfRateLimited(ctx context.Context, p provider.Provider, providerName string, errOut io.Writer) error {
 	rater, ok := p.(provider.Rater)
 	if !ok {
@@ -139,7 +139,8 @@ func warnIfRateLimited(ctx context.Context, p provider.Provider, providerName st
 		_, _ = fmt.Fprintf(errOut, "Warning: %v\n", err)
 		return nil
 	}
-	return err
+	_, _ = fmt.Fprintf(errOut, "Warning: %v\n", err)
+	return nil
 }
 
 func discoverRepos(ctx context.Context, p provider.Provider, cfg *config.Config) ([]provider.Repo, error) {
