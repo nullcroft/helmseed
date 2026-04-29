@@ -11,7 +11,7 @@ helmseed bootstraps golden-image Helm charts from a GitHub org or GitLab group i
 3. **Select** -- presents an interactive TUI where you pick which charts to include.
 4. **Cache** -- shallow-clones selected repos into `~/.cache/helmseed/` with a configurable TTL. Subsequent runs skip repos whose cache entry is still fresh.
 5. **Bootstrap** -- copies cached chart contents into `.helm/charts/` in your working directory, stripping `.git` metadata.
-6. **Helm files** -- generates `.helm/Chart.yaml` (umbrella chart with dependencies) and `.helm/Chart.lock` (pinned versions).
+6. **Helm files** -- generates `.helm/Chart.yaml` (umbrella chart with dependencies) and `.helm/Chart.lock` (pinned versions), using each dependency chart's own `Chart.yaml` name and version.
 7. **Update** -- force re-fetches all locked charts, overwrites `.helm/charts/`, and regenerates both Helm files.
 
 ## Installation
@@ -28,7 +28,7 @@ The binary is written to `./bin/helmseed`.
 
 ## Configuration
 
-helmseed reads configuration from `helmseed.yaml` in the current directory. All values can also be set via environment variables with the `HELMSEED_` prefix (e.g. `HELMSEED_TOKEN`).
+helmseed reads configuration from `helmseed.yaml` in the current directory. All values can also be set via environment variables with the `HELMSEED_` prefix (e.g. `HELMSEED_TOKEN`). Environment variables override file values.
 
 ```yaml
 # Git provider: "github" or "gitlab"
@@ -37,8 +37,8 @@ provider: github
 # GitHub org name or GitLab group path
 group: my-org
 
-# Personal access token (required, can also use HELMSEED_TOKEN env var)
-token: ghp_...
+# Personal access token (optional for public repos; prefer HELMSEED_TOKEN)
+# token: ghp_...
 
 # GitLab only: override base URL for self-hosted instances
 # base_url: https://gitlab.example.com
@@ -67,26 +67,30 @@ token: ghp_...
 
 ### Required fields
 
-| Field      | Description                                  |
-|------------|----------------------------------------------|
-| `provider` | `github` or `gitlab`                         |
-| `group`    | GitHub organization or GitLab group path     |
-| `token`    | Personal access token for API and clone auth |
+| Field      | Description                              |
+|------------|------------------------------------------|
+| `provider` | `github` or `gitlab`                     |
+| `group`    | GitHub organization or GitLab group path |
 
-> **Security note**: prefer the `HELMSEED_TOKEN` environment variable for the token, especially in CI or shared workstations. If you must place the token in `helmseed.yaml`, make sure that file is gitignored and never committed. The config file stores the token in plaintext.
+> **Security note**: `token` is optional for public repositories, but usually required for private repos and higher API rate limits. Prefer the `HELMSEED_TOKEN` environment variable, especially in CI or shared workstations. If you must place the token in `helmseed.yaml`, make sure that file is gitignored and never committed. The config file stores the token in plaintext.
+
+If provider API requests are rate-limited, helmseed prints a warning or a retry hint with the reset time when the provider exposes one.
 
 ### Optional fields
 
-| Field            | Description                                        | Default            |
-|-----------------|----------------------------------------------------|-------------------|
-| `base_url`      | GitLab base URL for self-hosted instances         | none              |
-| `prefix`        | Only include repos with names starting with this  | none              |
-| `cache_ttl`    | Duration before a cached repo is considered stale | `24h`             |
-| `charts_dir`    | Output directory for Helm charts            | `.helm`           |
-| `cache_dir`    | Cache directory for cloned repos (must be absolute) | `$XDG_CACHE_HOME/helmseed` or `~/.cache/helmseed` |
-| `chart_name`     | Name field in generated Chart.yaml         | `placeholder`     |
-| `chart_description`| Description field in generated Chart.yaml| `placeholder`     |
-| `non_interactive`| Skip confirmation prompts                  | `false`           |
+| Field               | Description                                          | Default                                             |
+|---------------------|------------------------------------------------------|-----------------------------------------------------|
+| `base_url`          | GitLab base URL for self-hosted instances           | none                                                |
+| `token`             | Personal access token for API and clone auth        | none                                                |
+| `prefix`            | Only include repos with names starting with this    | none                                                |
+| `cache_ttl`         | Duration before a cached repo is considered stale   | `24h`                                               |
+| `charts_dir`        | Relative output directory for Helm charts           | `.helm`                                             |
+| `cache_dir`         | Cache directory for cloned repos (must be absolute) | `$XDG_CACHE_HOME/helmseed` or `~/.cache/helmseed`   |
+| `chart_name`        | Name field in generated Chart.yaml                  | existing value or `placeholder`                     |
+| `chart_description` | Description field in generated Chart.yaml           | existing value or `Auto-generated by helmseed`      |
+| `non_interactive`   | Skip confirmation prompts                           | `false`                                             |
+
+`charts_dir` must be relative. `cache_dir` must be absolute. Neither path may contain `..`.
 
 ## Usage
 
@@ -112,7 +116,7 @@ helmseed bootstrap --dry-run    # preview without executing
 
 This opens a TUI multi-select. Use `j`/`k` or arrow keys to navigate, `space` to toggle, `a` to select all, and `enter` to confirm. Press `q` or `ctrl+c` to abort.
 
-Charts already present in `.helm/charts/` are skipped. Both `.helm/Chart.yaml` and `.helm/Chart.lock` are written after bootstrap completes. When a `prefix` is configured, it is stripped from chart names in the output directories and Helm files.
+Charts already present in `.helm/charts/` are skipped. Both `.helm/Chart.yaml` and `.helm/Chart.lock` are written after bootstrap completes. When a `prefix` is configured, it is stripped from output directory names and fallback dependency names. If a dependency chart has a `name` in its own `Chart.yaml`, helmseed uses that chart name in the generated Helm files.
 
 ### Update charts
 
@@ -157,6 +161,7 @@ Each entry contains the repo files (with `.git` stripped) and a `meta.json` with
 {
   "cloned_at": "2026-04-22T10:00:00Z",
   "clone_url": "git@github.com:my-org/chart-postgres.git",
+  "https_url": "https://github.com/my-org/chart-postgres.git",
   "default_branch": "main",
   "commit": "abc123..."
 }
@@ -166,14 +171,14 @@ Cache entries older than the configured TTL are re-cloned on the next `bootstrap
 
 ## Helm files
 
-Both files are written by `bootstrap` and `update` and should be committed to version control.
+Both files are written by `bootstrap` and `update` and should be committed to version control. Existing umbrella chart metadata in `.helm/Chart.yaml` is preserved when present; helmseed rewrites the `dependencies` list from the selected or locked charts. `chart_name` and `chart_description` override the preserved values when configured.
 
 ### `.helm/Chart.yaml`
 
 ```yaml
 apiVersion: v2
 name: placeholder
-description: placeholder
+description: Auto-generated by helmseed
 version: 0.1.0
 type: application
 dependencies:
