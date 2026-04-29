@@ -126,6 +126,41 @@ token: original
 	}
 }
 
+func TestLoad_EnvOnlyConfig(t *testing.T) {
+	viper.Reset()
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	t.Setenv("HELMSEED_PROVIDER", "gitlab")
+	t.Setenv("HELMSEED_GROUP", "mygroup/subgroup")
+	t.Setenv("HELMSEED_TOKEN", "env-token-123")
+	t.Setenv("HELMSEED_BASE_URL", "https://gitlab.example.com")
+
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.Provider != ProviderGitLab {
+		t.Errorf("provider = %q, want gitlab", c.Provider)
+	}
+	if c.Group != "mygroup/subgroup" {
+		t.Errorf("group = %q, want mygroup/subgroup", c.Group)
+	}
+	if c.Token != "env-token-123" {
+		t.Errorf("token = %q, want env-token-123", c.Token)
+	}
+	if c.BaseURL != "https://gitlab.example.com" {
+		t.Errorf("base_url = %q, want https://gitlab.example.com", c.BaseURL)
+	}
+}
+
 func TestLoad_NonexistentFile(t *testing.T) {
 	viper.Reset()
 	_, err := Load("/tmp/nonexistent-helmseed-config-12345.yaml")

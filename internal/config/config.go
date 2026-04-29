@@ -52,6 +52,23 @@ func Load(cfgFile string) (*Config, error) {
 
 	v.SetEnvPrefix("HELMSEED")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	for _, key := range []string{
+		"provider",
+		"group",
+		"token",
+		"base_url",
+		"prefix",
+		"cache_ttl",
+		"charts_dir",
+		"cache_dir",
+		"non_interactive",
+		"chart_name",
+		"chart_description",
+	} {
+		if err := v.BindEnv(key); err != nil {
+			return nil, fmt.Errorf("bind env %s: %w", key, err)
+		}
+	}
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {
