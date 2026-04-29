@@ -58,6 +58,7 @@ func (d Dependencies) withDefaults() Dependencies {
 func NewRootCommand(deps Dependencies) *cobra.Command {
 	deps = deps.withDefaults()
 	flags := &commandFlags{}
+	cobra.EnableTraverseRunHooks = true
 
 	rootCmd := &cobra.Command{
 		Use:   "helmseed",

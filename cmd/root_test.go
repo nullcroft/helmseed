@@ -208,6 +208,35 @@ func TestUpdateAbortsWithNegativeConfirmation(t *testing.T) {
 	}
 }
 
+func TestUpdateDryRunDoesNotMutate(t *testing.T) {
+	var updateCalled bool
+	deps := Dependencies{
+		LoadConfig: func(string) (*config.Config, error) {
+			return &config.Config{Provider: config.ProviderGitHub, Group: "my-org"}, nil
+		},
+		Update: func(context.Context, cache.BootstrapOptions) error {
+			updateCalled = true
+			return nil
+		},
+	}
+
+	cmd := NewRootCommand(deps)
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"update", "--dry-run", "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute returned error: %v", err)
+	}
+	if updateCalled {
+		t.Fatal("update should not be called in dry-run mode")
+	}
+	if !strings.Contains(out.String(), "Would re-fetch all charts") {
+		t.Fatalf("expected dry-run output, got %q", out.String())
+	}
+}
+
 func TestUpdate_HappyPath(t *testing.T) {
 	var capturedOpts cache.BootstrapOptions
 	deps := Dependencies{
