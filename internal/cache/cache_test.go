@@ -17,6 +17,11 @@ import (
 // initBareRepo creates a bare git repo with one commit so it can be cloned.
 func initBareRepo(t *testing.T, dir, branch string) string {
 	t.Helper()
+	return initBareRepoWithChartName(t, dir, branch, branch)
+}
+
+func initBareRepoWithChartName(t *testing.T, dir, branch, chartName string) string {
+	t.Helper()
 	path := filepath.Join(dir, branch+".git")
 
 	repo, err := git.PlainInit(path, true)
@@ -42,7 +47,7 @@ func initBareRepo(t *testing.T, dir, branch string) string {
 	if err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	if _, err := f.WriteString("name: test\nversion: 1.0.0\n"); err != nil {
+	if _, err := f.WriteString("name: " + chartName + "\nversion: 1.0.0\n"); err != nil {
 		_ = f.Close()
 		t.Fatalf("write file: %v", err)
 	}
@@ -78,20 +83,105 @@ func initBareRepo(t *testing.T, dir, branch string) string {
 	return path
 }
 
+func changeWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+}
+
+func assertCacheEntries(t *testing.T, cacheDir string, repos []provider.Repo) {
+	t.Helper()
+	for _, r := range repos {
+		cacheEntry := filepath.Join(cacheDir, r.Name)
+		if _, err := os.Stat(filepath.Join(cacheEntry, "Chart.yaml")); err != nil {
+			t.Errorf("cache %s: Chart.yaml missing: %v", r.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(cacheEntry, metaFileName)); err != nil {
+			t.Errorf("cache %s: meta.json missing: %v", r.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(cacheEntry, ".git")); !os.IsNotExist(err) {
+			t.Errorf("cache %s: .git should have been stripped", r.Name)
+		}
+	}
+}
+
+func assertCopiedCharts(t *testing.T, chartsDir string, repos []provider.Repo) {
+	t.Helper()
+	for _, r := range repos {
+		dest := filepath.Join(chartsDir, "charts", r.Name)
+		if _, err := os.Stat(filepath.Join(dest, "Chart.yaml")); err != nil {
+			t.Errorf("charts %s: Chart.yaml missing: %v", r.Name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, metaFileName)); !os.IsNotExist(err) {
+			t.Errorf("charts %s: meta.json should not be copied", r.Name)
+		}
+	}
+}
+
+func readLockForTest(t *testing.T, chartsDir string) ChartLock {
+	t.Helper()
+	lockData, err := os.ReadFile(filepath.Join(chartsDir, lockFileName))
+	if err != nil {
+		t.Fatalf("lock file missing: %v", err)
+	}
+	var lock ChartLock
+	if err := yaml.Unmarshal(lockData, &lock); err != nil {
+		t.Fatalf("lock file is not valid YAML: %v", err)
+	}
+	return lock
+}
+
+func assertCompleteLock(t *testing.T, lock ChartLock, wantDeps int) {
+	t.Helper()
+	if lock.Generated.IsZero() {
+		t.Error("lock file: generated timestamp is zero")
+	}
+	if lock.Digest == "" {
+		t.Error("lock file: digest is empty")
+	}
+	if len(lock.Dependencies) != wantDeps {
+		t.Fatalf("lock file: expected %d dependencies, got %d", wantDeps, len(lock.Dependencies))
+	}
+	for _, dep := range lock.Dependencies {
+		if dep.Name == "" {
+			t.Error("lock dependency: name is empty")
+		}
+		if dep.Repository == "" {
+			t.Error("lock dependency: repository is empty")
+		}
+		if dep.Version == "" {
+			t.Error("lock dependency: version is empty")
+		}
+	}
+}
+
+func assertCacheMetaCommits(t *testing.T, cacheDir string, repos []provider.Repo) {
+	t.Helper()
+	for _, r := range repos {
+		m, err := readMeta(filepath.Join(cacheDir, r.Name))
+		if err != nil {
+			t.Errorf("read meta %s: %v", r.Name, err)
+			continue
+		}
+		if len(m.Commit) != 40 {
+			t.Errorf("meta %s: commit SHA should be 40 chars, got %q", r.Name, m.Commit)
+		}
+	}
+}
+
 func TestBootstrap_ClonesAndCopies(t *testing.T) {
 	bareDir := t.TempDir()
 	bare1 := initBareRepo(t, bareDir, "repo-a")
 	bare2 := initBareRepo(t, bareDir, "repo-b")
 
 	workDir := t.TempDir()
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(workDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer func() { _ = os.Chdir(origDir) }()
+	changeWorkingDir(t, workDir)
 
 	tmpCache := filepath.Join(workDir, "cache")
 	testChartsDir := filepath.Join(workDir, ".helm")
@@ -106,69 +196,10 @@ func TestBootstrap_ClonesAndCopies(t *testing.T) {
 		t.Fatalf("Bootstrap() error: %v", err)
 	}
 
-	for _, r := range repos {
-		cacheEntry := filepath.Join(tmpCache, r.Name)
-		if _, err := os.Stat(filepath.Join(cacheEntry, "Chart.yaml")); err != nil {
-			t.Errorf("cache %s: Chart.yaml missing: %v", r.Name, err)
-		}
-		if _, err := os.Stat(filepath.Join(cacheEntry, metaFileName)); err != nil {
-			t.Errorf("cache %s: meta.json missing: %v", r.Name, err)
-		}
-		if _, err := os.Stat(filepath.Join(cacheEntry, ".git")); !os.IsNotExist(err) {
-			t.Errorf("cache %s: .git should have been stripped", r.Name)
-		}
-	}
-
-	for _, r := range repos {
-		dest := filepath.Join(testChartsDir+"/charts", r.Name)
-		if _, err := os.Stat(filepath.Join(dest, "Chart.yaml")); err != nil {
-			t.Errorf("charts %s: Chart.yaml missing: %v", r.Name, err)
-		}
-		if _, err := os.Stat(filepath.Join(dest, metaFileName)); !os.IsNotExist(err) {
-			t.Errorf("charts %s: meta.json should not be copied", r.Name)
-		}
-	}
-
-	lockFile := filepath.Join(testChartsDir, lockFileName)
-	lockData, err := os.ReadFile(lockFile)
-	if err != nil {
-		t.Fatalf("lock file missing: %v", err)
-	}
-	var lock ChartLock
-	if err := yaml.Unmarshal(lockData, &lock); err != nil {
-		t.Fatalf("lock file is not valid YAML: %v", err)
-	}
-	if lock.Generated.IsZero() {
-		t.Error("lock file: generated timestamp is zero")
-	}
-	if lock.Digest == "" {
-		t.Error("lock file: digest is empty")
-	}
-	if len(lock.Dependencies) != 2 {
-		t.Fatalf("lock file: expected 2 dependencies, got %d", len(lock.Dependencies))
-	}
-	for _, dep := range lock.Dependencies {
-		if dep.Name == "" {
-			t.Error("lock dependency: name is empty")
-		}
-		if dep.Repository == "" {
-			t.Error("lock dependency: repository is empty")
-		}
-		if dep.Version == "" {
-			t.Error("lock dependency: version is empty")
-		}
-	}
-
-	for _, r := range repos {
-		m, err := readMeta(filepath.Join(tmpCache, r.Name))
-		if err != nil {
-			t.Errorf("read meta %s: %v", r.Name, err)
-			continue
-		}
-		if len(m.Commit) != 40 {
-			t.Errorf("meta %s: commit SHA should be 40 chars, got %q", r.Name, m.Commit)
-		}
-	}
+	assertCacheEntries(t, tmpCache, repos)
+	assertCopiedCharts(t, testChartsDir, repos)
+	assertCompleteLock(t, readLockForTest(t, testChartsDir), len(repos))
+	assertCacheMetaCommits(t, tmpCache, repos)
 }
 
 func TestBootstrap_CacheHit(t *testing.T) {
@@ -357,7 +388,7 @@ func TestBootstrap_LocalRef(t *testing.T) {
 		t.Fatalf("lock file is not valid YAML: %v", err)
 	}
 	for _, dep := range lock.Dependencies {
-		expected := "file://charts/" + dep.Name
+		expected := localChartRepoPrefix + dep.Name
 		if dep.Repository != expected {
 			t.Errorf("dependency %s: repository = %q, want %q", dep.Name, dep.Repository, expected)
 		}
@@ -410,7 +441,7 @@ func TestBootstrap_RemoteRef(t *testing.T) {
 
 func TestBootstrap_PrefixStripped(t *testing.T) {
 	bareDir := t.TempDir()
-	bare1 := initBareRepo(t, bareDir, "helm-app-frontend")
+	bare1 := initBareRepoWithChartName(t, bareDir, "helm-app-frontend", "frontend")
 
 	workDir := t.TempDir()
 	origDir, err := os.Getwd()

@@ -27,6 +27,7 @@ const (
 	chartFileName         = "Chart.yaml"
 	lockFileName          = "Chart.lock"
 	metaFileName          = "meta.json"
+	localChartRepoPrefix  = "file://charts/"
 	maxWorkers            = 5
 	cloneTimeout          = 5 * time.Minute
 	errCopyFmt            = "copy %s from cache: %w"
@@ -119,6 +120,7 @@ type ChartDependency struct {
 }
 
 type chartMeta struct {
+	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
 }
 
@@ -417,10 +419,12 @@ func cloneOne(ctx context.Context, r provider.Repo, entryDir string) error {
 		cloneCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
 		defer cancel()
 		cloneOpts := &git.CloneOptions{
-			URL:           r.CloneURL,
-			Depth:         1,
-			SingleBranch:  true,
-			ReferenceName: plumbing.NewBranchReferenceName(r.DefaultBranch),
+			URL:   r.CloneURL,
+			Depth: 1,
+		}
+		if r.DefaultBranch != "" {
+			cloneOpts.SingleBranch = true
+			cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(r.DefaultBranch)
 		}
 		repo, err := git.PlainCloneContext(cloneCtx, entryDir, false, cloneOpts)
 		if err != nil {
@@ -434,11 +438,15 @@ func cloneOne(ctx context.Context, r provider.Repo, entryDir string) error {
 		if err := os.RemoveAll(filepath.Join(entryDir, ".git")); err != nil {
 			return err
 		}
+		defaultBranch := r.DefaultBranch
+		if defaultBranch == "" {
+			defaultBranch = head.Name().Short()
+		}
 		if err := writeMeta(entryDir, Meta{
 			ClonedAt:      time.Now(),
 			CloneURL:      r.CloneURL,
 			HTTPSURL:      r.HTTPSURL,
-			DefaultBranch: r.DefaultBranch,
+			DefaultBranch: defaultBranch,
 			Commit:        head.Hash().String(),
 		}); err != nil {
 			return err
@@ -448,17 +456,25 @@ func cloneOne(ctx context.Context, r provider.Repo, entryDir string) error {
 	})
 }
 
-func readChartVersion(dir string) (string, error) {
+func readDependencyChartMetadata(dir string) (chartMeta, error) {
 	data, err := readFileInDir(dir, chartFileName)
 	if err != nil {
-		return "", fmt.Errorf("read Chart.yaml: %w", err)
+		return chartMeta{}, fmt.Errorf("read Chart.yaml: %w", err)
 	}
 	var cm chartMeta
 	if err := yaml.Unmarshal(data, &cm); err != nil {
-		return "", fmt.Errorf("parse Chart.yaml: %w", err)
+		return chartMeta{}, fmt.Errorf("parse Chart.yaml: %w", err)
 	}
 	if cm.Version == "" {
-		return "", errors.New("chart.yaml has empty version")
+		return chartMeta{}, errors.New("chart.yaml has empty version")
+	}
+	return cm, nil
+}
+
+func readChartVersion(dir string) (string, error) {
+	cm, err := readDependencyChartMetadata(dir)
+	if err != nil {
+		return "", err
 	}
 	return cm.Version, nil
 }
@@ -489,24 +505,28 @@ func writeHelmFiles(repos []provider.Repo, chartsDir string, mode RepoRefMode, c
 	}
 
 	for _, r := range repos {
-		version, err := readChartVersion(filepath.Join(chartsDir, "charts", r.Name))
+		meta, err := readDependencyChartMetadata(filepath.Join(chartsDir, "charts", r.Name))
 		if err != nil {
 			return fmt.Errorf("read chart version for %s: %w", r.Name, err)
+		}
+		depName := meta.Name
+		if depName == "" {
+			depName = r.Name
 		}
 
 		repo := strings.TrimSuffix(r.HTTPSURL, ".git")
 		if mode == LocalRef {
-			repo = "file://charts/" + r.Name
+			repo = localChartRepoPrefix + r.Name
 		}
 
 		lockDeps = append(lockDeps, LockDependency{
-			Name:       r.Name,
+			Name:       depName,
 			Repository: repo,
-			Version:    version,
+			Version:    meta.Version,
 		})
 		chartDeps = append(chartDeps, ChartDependency{
-			Name:       r.Name,
-			Version:    version,
+			Name:       depName,
+			Version:    meta.Version,
 			Repository: repo,
 		})
 	}
@@ -601,6 +621,9 @@ func updateWithCacheDir(ctx context.Context, base, chartsDir string, opts Bootst
 	if len(lock.Dependencies) == 0 {
 		return fmt.Errorf("no entries in %s — run bootstrap first", filepath.Join(chartsDir, lockFileName))
 	}
+	if err := os.MkdirAll(base, cacheDirPerm); err != nil {
+		return fmt.Errorf("create cache dir: %w", err)
+	}
 	repos, err := reposFromLock(lock, base)
 	if err != nil {
 		return err
@@ -625,31 +648,90 @@ func reposFromLock(lock *ChartLock, base string) ([]provider.Repo, error) {
 	seen := make(map[string]struct{}, len(lock.Dependencies))
 
 	for _, dep := range lock.Dependencies {
-		if !isValidRepoName(dep.Name) {
-			return nil, fmt.Errorf("invalid dependency name %q in lock file", dep.Name)
+		repoName, isLocalRef, err := repoNameFromLockDependency(dep)
+		if err != nil {
+			return nil, err
 		}
-		if _, exists := seen[dep.Name]; exists {
-			return nil, fmt.Errorf("duplicate dependency name %q in lock file", dep.Name)
+		if _, exists := seen[repoName]; exists {
+			return nil, fmt.Errorf("duplicate dependency path %q in lock file", repoName)
 		}
 
-		m, err := readMeta(filepath.Join(base, dep.Name))
+		m, err := readMeta(filepath.Join(base, repoName))
+		if err == nil {
+			repos = append(repos, provider.Repo{
+				Name:          repoName,
+				CloneURL:      m.CloneURL,
+				HTTPSURL:      m.HTTPSURL,
+				DefaultBranch: m.DefaultBranch,
+			})
+			seen[repoName] = struct{}{}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read cache meta for %s: %w", repoName, err)
+		}
+		if isLocalRef {
+			return nil, fmt.Errorf("read cache meta for %s: %w", repoName, err)
+		}
+
+		cloneURL, err := cloneURLFromRepository(dep.Repository)
 		if err != nil {
-			return nil, fmt.Errorf("read cache meta for %s: %w", dep.Name, err)
+			return nil, fmt.Errorf("dependency %s: %w", dep.Name, err)
 		}
 		repos = append(repos, provider.Repo{
-			Name:          dep.Name,
-			CloneURL:      m.CloneURL,
-			HTTPSURL:      m.HTTPSURL,
-			DefaultBranch: m.DefaultBranch,
+			Name:     repoName,
+			CloneURL: cloneURL,
+			HTTPSURL: dep.Repository,
 		})
-		seen[dep.Name] = struct{}{}
+		seen[repoName] = struct{}{}
 	}
 	return repos, nil
 }
 
+func repoNameFromLockDependency(dep LockDependency) (string, bool, error) {
+	if !isValidRepoName(dep.Name) {
+		return "", false, fmt.Errorf("invalid dependency name %q in lock file", dep.Name)
+	}
+	if strings.HasPrefix(dep.Repository, localChartRepoPrefix) {
+		repoName := strings.TrimPrefix(dep.Repository, localChartRepoPrefix)
+		if !isValidRepoName(repoName) {
+			return "", true, fmt.Errorf("invalid local dependency path %q in lock file", dep.Repository)
+		}
+		return repoName, true, nil
+	}
+	return dep.Name, false, nil
+}
+
+func cloneURLFromRepository(repository string) (string, error) {
+	repository = strings.TrimSpace(repository)
+	if repository == "" {
+		return "", errors.New("repository is empty and cache metadata is missing")
+	}
+	if strings.HasPrefix(repository, "http://") || strings.HasPrefix(repository, "https://") {
+		if strings.HasSuffix(repository, ".git") {
+			return repository, nil
+		}
+		return repository + ".git", nil
+	}
+	if filepath.IsAbs(repository) {
+		if _, err := os.Stat(repository); err == nil {
+			return repository, nil
+		}
+		withGitSuffix := repository + ".git"
+		if _, err := os.Stat(withGitSuffix); err == nil {
+			return withGitSuffix, nil
+		}
+		return repository, nil
+	}
+	if strings.HasPrefix(repository, "ssh://") || strings.HasPrefix(repository, "git://") || strings.HasPrefix(repository, "git@") || strings.HasPrefix(repository, "file://") {
+		return repository, nil
+	}
+	return "", fmt.Errorf("repository %q cannot be used to restore a missing cache entry", repository)
+}
+
 func detectRefMode(lock *ChartLock) RepoRefMode {
 	for _, dep := range lock.Dependencies {
-		if strings.HasPrefix(dep.Repository, "file://") {
+		if strings.HasPrefix(dep.Repository, localChartRepoPrefix) {
 			return LocalRef
 		}
 	}

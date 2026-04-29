@@ -100,6 +100,33 @@ func TestReadChartVersion(t *testing.T) {
 	}
 }
 
+func TestWriteHelmFilesUsesChildChartName(t *testing.T) {
+	chartsDir := t.TempDir()
+	chartDir := filepath.Join(chartsDir, "charts", "repo-a")
+	if err := os.MkdirAll(chartDir, 0o755); err != nil {
+		t.Fatalf("mkdir chart dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartDir, chartFileName), []byte("name: postgres\nversion: 1.2.3\n"), 0o644); err != nil {
+		t.Fatalf("write child chart: %v", err)
+	}
+
+	repos := []provider.Repo{{Name: "repo-a", HTTPSURL: "https://example.com/repo-a.git"}}
+	if err := writeHelmFiles(repos, chartsDir, RemoteRef, "", ""); err != nil {
+		t.Fatalf("writeHelmFiles error: %v", err)
+	}
+
+	lock, err := readLockFile(chartsDir)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if len(lock.Dependencies) != 1 {
+		t.Fatalf("expected 1 dependency, got %d", len(lock.Dependencies))
+	}
+	if lock.Dependencies[0].Name != "postgres" {
+		t.Fatalf("dependency name = %q, want postgres", lock.Dependencies[0].Name)
+	}
+}
+
 func TestDigestDependencies(t *testing.T) {
 	deps := []LockDependency{
 		{Name: "b", Repository: "https://b", Version: "2.0.0"},
@@ -128,7 +155,7 @@ func TestDetectRefMode(t *testing.T) {
 		t.Error("expected RemoteRef")
 	}
 
-	lock.Dependencies[0].Repository = "file://charts/a"
+	lock.Dependencies[0].Repository = localChartRepoPrefix + "a"
 	if detectRefMode(lock) != LocalRef {
 		t.Error("expected LocalRef")
 	}
@@ -538,6 +565,43 @@ func TestUpdateWithCacheDir_ClonesAll(t *testing.T) {
 	}
 	if meta.Commit == "old" {
 		t.Fatal("expected repo to be re-cloned during update")
+	}
+}
+
+func TestUpdateWithCacheDir_UsesLockRepositoryWhenMetaMissing(t *testing.T) {
+	bareDir := t.TempDir()
+	bare1 := initBareRepo(t, bareDir, "repo-a")
+
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "cache")
+	chartsDir := filepath.Join(tmp, ".helm")
+	if err := os.MkdirAll(filepath.Join(chartsDir, "charts"), 0o755); err != nil {
+		t.Fatalf("mkdir charts: %v", err)
+	}
+
+	lock := ChartLock{
+		Generated: time.Now().UTC(),
+		Digest:    "digest",
+		Dependencies: []LockDependency{
+			{Name: "repo-a", Repository: strings.TrimSuffix(bare1, ".git"), Version: "1.0.0"},
+		},
+	}
+	lockData, err := yaml.Marshal(lock)
+	if err != nil {
+		t.Fatalf("marshal lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chartsDir, lockFileName), lockData, 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	if err := updateWithCacheDir(context.Background(), base, chartsDir, BootstrapOptions{}); err != nil {
+		t.Fatalf("updateWithCacheDir error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(chartsDir, "charts", "repo-a", chartFileName)); err != nil {
+		t.Fatalf("updated chart missing: %v", err)
+	}
+	if _, err := readMeta(filepath.Join(base, "repo-a")); err != nil {
+		t.Fatalf("expected cache meta to be written: %v", err)
 	}
 }
 
